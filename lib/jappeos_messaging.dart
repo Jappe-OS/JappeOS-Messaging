@@ -76,6 +76,7 @@ class CoreMessageMan {
     _dir = setReceivePipePath ?? "${Platform.executable}/pipes";
 
     // Create a named pipe (FIFO) for receiving messages
+    if (!Platform.isLinux) return;
     await Process.run('mkfifo', [_dir!]);
     final receivePipe = File(_dir!).openRead();
     await for (final data in receivePipe) {
@@ -101,6 +102,7 @@ class CoreMessageMan {
 
   /// Send message to target pipe. The message is a String type.
   static void send(String target, Message message) {
+    if (!Platform.isLinux) return;
     // Open the send pipe for writing
     final sendPipe = File(target).openWrite(mode: FileMode.append);
 
