@@ -14,125 +14,164 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-// ignore_for_file: constant_identifier_names
-
-import 'dart:convert';
 import 'dart:io';
-
 import 'package:event/event.dart';
 
-/// ARGS: "u:": Username; "p:": Password;
-///
-/// EXAMPLE: ".. + "u:My Namep:My Password""
-///
-/// RECEIVES_CALLBACK: false
-const JMSG_COREPRCSS_MSG_LOGIN = "login ";
+/// Use this class to send/receive messages between processes
+/// using the JappeOS messaging system.
+class JappeOSMessaging {
+  /// Check if the init() function was ever called.
+  static bool get initDone => _initDone;
+  static bool _initDone = false;
 
-/// ARGS:*
-///
-/// EXAMPLE: ".."
-///
-/// RECEIVES_CALLBACK: false
-const JMSG_COREPRCSS_MSG_LOGOUT = "logout";
+  static late ServerSocket _serverSocket;
 
-/// ARGS: "$from": The current receive pipe path;
-///
-/// EXAMPLE: ".. $from/path/to/receive/pipe"
-///
-/// RECEIVES_CALLBACK: true
-///
-/// CALLBACK_ARGS: "v:" The value (bool);
-///
-/// CALLBACK_EXAMPLE: ".. v:true"
-const JMSG_COREPRCSS_MSG_RECV_LOGGEDIN = "logged-in ";
+  /// Get a list of connected clients.
+  static List<Socket> get clients => _clients;
+  static final List<Socket> _clients = [];
 
-/// ARGS:*
-///
-/// EXAMPLE: ".."
-///
-/// RECEIVES_CALLBACK: false
-const JMSG_COREPRCSS_MSG_SHUTDOWN = "shutdown";
+  /// Initialize the messaging system.
+  static Future<void> init([int port = 8888]) async {
+    if (_initDone) return;
 
-/// The core pipe message manager for JappeOS. Helps the sending of
-/// messages to the `jappeos_core` process on Linux.
-///
-/// To send a message, use the [send] function, if you want to listen
-/// for messages, subscribe to the [receive] event using .subscribe.
-///
-/// [init] initializes the [CoreMessageMan], making it possible to
-/// receive messages from other processes. `setReceivePipePath` is
-/// an optional field, if null, uses the defualt value. [init]
-/// should be called when the application starts, in the `main` function.
-///
-/// WARNING: This is meant to be able to work on Linux only, may work
-/// on other operating systems, but it is not tested.
-class CoreMessageMan {
-  // Current pipe message receive directory location.
-  static String? _dir;
+    // Create a server socket
+    _serverSocket = await ServerSocket.bind('localhost', port);
+    print('Server listening on ${_serverSocket.address}:${_serverSocket.port}');
 
-  /// Initializes the pipe message system. If [setReceivePipePath] is null,
-  /// it will default to "${Platform.executable}/pipes".
-  static void init([String? setReceivePipePath]) async {
-    _dir = setReceivePipePath ?? "${Platform.executable}/pipes";
+    _initDone = true;
 
-    // Create a named pipe (FIFO) for receiving messages
-    if (!Platform.isLinux) return;
-    await Process.run('mkfifo', [_dir!]);
-    final receivePipe = File(_dir!).openRead();
-    await for (final data in receivePipe) {
-      String message = utf8.decode(data).trim();
-      String first = message.substring(0, message.indexOf('\$'));
-      Map<String, String> args = {};
-
-      RegExp regex = RegExp(r'\$(.*?)\$');
-      Iterable<RegExpMatch> matches = regex.allMatches(message);
-
-      for (RegExpMatch match in matches) {
-        String? key = match.group(1);
-        int start = match.end;
-        int end = (matches.elementAt(matches.toList().indexOf(match) + 1).start);
-        String value = message.substring(start, end).trim();
-
-        args[key ?? "NULL"] = value;
-      }
-
-      receive.broadcast(Message(first, args));
+    await for (var clientSocket in _serverSocket) {
+      _handleClientConnection(clientSocket);
     }
   }
 
-  /// Send message to target pipe. The message is a String type.
-  static void send(String target, Message message) {
-    if (!Platform.isLinux) return;
-    // Open the send pipe for writing
-    final sendPipe = File(target).openWrite(mode: FileMode.append);
+  /// Handles the connection of a client.
+  static void _handleClientConnection(Socket clientSocket) {
+    print('Client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
+    _clients.add(clientSocket);
 
-    String finalMsg = message.message;
-    if (finalMsg.substring(finalMsg.length - 1) != " ") finalMsg += " ";
-    message.args.forEach((key, value) {
-      finalMsg += r"$" + key + r"$";
-      finalMsg += value;
+    // Receive response from the server
+    clientSocket.listen((data) {
+      var request = String.fromCharCodes(data).trim();
+      print('Received request from client: $request');
+
+      //Message finalMsg = Message.fromString(request);
+      //if (finalMsg.args.containsKey("__REC_CALLBACK__")) {
+      //  send(Message("__CALLBCAK_MSG__", {"__RET__": "0"}), clientSocket);
+      //}
+
+      receive.broadcast(Message.fromString(request));
     });
-
-    sendPipe.writeln(finalMsg + r"$end");
-
-    // Close the send pipe
-    sendPipe.close();
   }
 
-  /// An event that is fired when a message is received. The received message is a String.
-  static Event<Message> receive = Event<Message>();
+  /// Cleans up the messaging system.
+  static void clean() async {
+    for (Socket s in _clients) {
+      s.flush();
+      s.close();
+    }
+    await _serverSocket.close();
+    _initDone = false;
+  }
 
-  /// Get the current pipe path set in the [init] function.
-  static String? getPipePath() => _dir;
+  /// Send a message to a target client.
+  static void send(Message msg, [Socket? to]) {
+    Message finalMsg = msg;
+    finalMsg.args["__SENDER__"] = "${_serverSocket.address}+${_serverSocket.port}";
+
+    if (to == null) {
+      for (Socket s in _clients) {
+        s.write(msg);
+      }
+    } else {
+      to.write(msg);
+    }
+  }
+
+  /// Send a message to a target client, but receive a result message.
+  //static Future<Message?> sendAndCallback(Message msg, [Socket? to]) async {
+  //  Message finalMsg = msg;
+  //  int id = Random().nextInt(100);
+  //  finalMsg.args["__REC_CALLBACK__"] = id.toString();
+//
+  //  if (to == null) {
+  //    for (Socket s in _clients) {
+  //      s.write(msg);
+  //    }
+  //  } else {
+  //    to.write(msg);
+  //  }
+//
+  //  Message? ret;
+  //  receive.subscribe((msg) {
+  //    if (to == null) {
+  //      if (msg?.name != "__CALLBCAK_MSG__" || msg?.args["__REC_CALLBACK__"] != id.toString()) return;
+//
+  //      ret = msg;
+  //    } else {
+//
+  //    }
+  //  });
+  //  return Future.value(ret);
+  //}
+
+  /// An event fired when a message is received.
+  static final receive = Event<Message>();
 }
 
-/// A message that can be sent and received.
+/// A message that can be received and sent.
 class Message extends EventArgs {
-  Message(this.message, this.args);
+  /// The name of the [Message].
+  String name;
 
-  /// The message.
-  final String message;
+  /// The args of the message, key is the name of the arg,
+  /// value is the value of the arg, if other types are used,
+  /// use the [toString] function of [Object].
+  Map<String, String> args;
 
-  /// Message args; key = The id, value = The value of the arg.
-  final Map<String, String> args;
+  /// Converts a [String] to a [Message].
+  static Message fromString(String str) {
+    Message result = Message(_getSubstringBeforeFirstSpace(str), {});
+
+    var pairs = str.replaceFirst(result.name, "").trim().split(';');
+    for (var pair in pairs) {
+      var keyValue = pair.split(':');
+      if (keyValue.length == 2) {
+        var key = keyValue[0].replaceAll('"', '').trim();
+        var value = keyValue[1].replaceAll(RegExp(r'(?<!\\)"'), '').replaceAll(r'\"', '"').trim();
+        result.args[key] = value;
+      }
+    }
+
+    return result;
+  }
+
+  /// Convert this [Message] to a [String].
+  @override
+  String toString() {
+    String result = "${validateName(name)} ";
+
+    args.forEach((key, value) {
+      result += '"$key":"${value.replaceAll('"', r'\"')}";';
+    });
+
+    return result;
+  }
+
+  /// Make a name parameter of a [Message] ready to be sent.
+  static String validateName(String str) {
+    return str.replaceAll(" ", "-");
+  }
+
+  /// Get all text befor the first " " letter.
+  static String _getSubstringBeforeFirstSpace(String input) {
+    List<String> parts = input.split(' ');
+    if (parts.isNotEmpty) {
+      return parts.first;
+    }
+    return '';
+  }
+
+  /// Contruct a message.
+  Message(this.name, this.args);
 }
