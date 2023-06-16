@@ -41,7 +41,7 @@ class JappeOSMessaging {
         clientSocket.listen((data) {
           var request = String.fromCharCodes(data).trim();
           print('Received request from client (${clientSocket.remoteAddress}:${clientSocket.remotePort}): $request');
-          receive.broadcast(Message.fromString(request));
+          receive.broadcast(Values(Message.fromString(request), clientSocket));
         }, onDone: () {
           _handleClientDisconnection(clientSocket);
         });
@@ -93,7 +93,7 @@ class JappeOSMessaging {
   /// An [Event] that can be listened to. Listen for [Message]s
   /// sent to this instance, a message can contain a lot of data,
   /// see: [Message]. For the use of the event system, see: [Event].
-  static final receive = Event<Message>();
+  static final receive = Event<Values<Message, Socket>>();
 }
 
 /// A message that can be first sent, then received somewhere else.
