@@ -15,6 +15,7 @@
 //  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:event/event.dart';
 
 /// Use this class to send/receive messages between processes
@@ -28,9 +29,9 @@ class MessagingPipe {
 
   /// Contruct a messaging pipe object.
   /// Calls the init method, see: [_init].
-  /// NOTE: Remember to call [clean] after using to clean up all resources.
-  MessagingPipe(int port) {
-    _init(port);
+  /// NOTE: Remember to call [clean] after using this [MessagingPipe] to clean up all resources.
+  MessagingPipe(int port, void Function(dynamic) onError) {
+    _init(port, onError);
   }
 
   /// Holds a list of clients connected to this instance.
@@ -46,7 +47,7 @@ class MessagingPipe {
   /// This makes it possible for the "server" (this process)
   /// to send and receive [Message]s using the other methods
   /// provided by this class.
-  Future<void> _init(int port) async {
+  Future<void> _init(int port, void Function(dynamic) onError) async {
     _name = "MessageHandler-$port";
 
     ServerSocket.bind('localhost', port).then((serverSocket) {
@@ -62,11 +63,9 @@ class MessagingPipe {
           _clients.add(clientSocket);
           print('New client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
 
-          // Listen for messages from the client & invoke the 'receive' event.
+          // Start listening for messages from the client & invoke the 'receive' event.
           clientSocket.listen((data) {
-            var request = String.fromCharCodes(data).trim();
-            print('Received request from client (${clientSocket.remoteAddress}:${clientSocket.remotePort}): $request');
-            receive.broadcast(Values(Message.fromString(request), clientSocket));
+            _handleClientData(clientSocket, data);
           }, onDone: () {
             // When the client disconnects.
             _handleClientDisconnection(clientSocket);
@@ -74,17 +73,23 @@ class MessagingPipe {
         }
       });
     }).catchError((error) {
-      // Remove this instance.
-      _instances.remove(name);
-
       // Handle failed server startup. >>
+      onError(error);
+      clean();
       print('Failed to start server: $error');
     });
   }
 
+  /// Handle data received from a connected client.
+  void _handleClientData(Socket clientSocket, Uint8List data) async {
+    var request = String.fromCharCodes(data).trim();
+    print('Received request from client (${clientSocket.remoteAddress}:${clientSocket.remotePort}): $request');
+    receive.broadcast(Values(Message.fromString(request), clientSocket));
+  }
+
   /// Handle the disconnection of a client, a client needs
   /// to connect first to send messages.
-  void _handleClientDisconnection(Socket clientSocket) {
+  void _handleClientDisconnection(Socket clientSocket) async {
     print('Client disconnected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
     _clients.remove(clientSocket);
   }
@@ -105,7 +110,7 @@ class MessagingPipe {
 
   /// Sends a [Message] object to another process listening on
   /// `port`. A message can contain a lot of data, see: [Message].
-  Future<MessageOperationResult> send(int port, Message msg) {
+  Future<MessageOperationResult> send(int port, Message msg) async {
     Socket.connect('localhost', port, timeout: Duration(seconds: 5)).then((socket) {
       // Connect, Write, Disconnect.
       socket.write(msg.toString());
