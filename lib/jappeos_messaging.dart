@@ -14,7 +14,6 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import 'dart:html';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:event/event.dart';
@@ -31,7 +30,7 @@ class MessagingPipe {
   /// Contruct a messaging pipe object.
   /// Calls the init method, see: [_init].
   /// NOTE: Remember to call [clean] after using this [MessagingPipe] to clean up all resources.
-  MessagingPipe(int port, {void Function(dynamic)? onError, VoidCallback? onDone}) {
+  MessagingPipe(int port, {void Function(dynamic)? onError, void Function()? onDone}) {
     _init(port, onError, onDone);
   }
 
@@ -48,7 +47,7 @@ class MessagingPipe {
   /// This makes it possible for the "server" (this process)
   /// to send and receive [Message]s using the other methods
   /// provided by this class.
-  Future<void> _init(int port, void Function(dynamic)? onError, VoidCallback? onDone) async {
+  Future<void> _init(int port, void Function(dynamic)? onError, void Function()? onDone) async {
     _name = "MessageHandler-$port";
 
     ServerSocket.bind('localhost', port).then((serverSocket) {
