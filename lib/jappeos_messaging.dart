@@ -19,50 +19,83 @@ import 'package:event/event.dart';
 
 /// Use this class to send/receive messages between processes
 /// using the JappeOS messaging system.
-class JappeOSMessaging {
+class MessagingPipe {
+  /// Holds a static list of all [MessagingPipe] instances created in this app.
+  static final Map<String, int> _instances = <String, int>{};
+
+  /// Return the static list of all [MessagingPipe] instances created in this app.
+  static Map<String, int> get instances => _instances;
+
+  /// Contruct a messaging pipe object.
+  /// Calls the init method, see: [_init].
+  /// NOTE: Remember to call [clean] after using to clean up all resources.
+  MessagingPipe(int port) {
+    _init(port);
+  }
+
   /// Holds a list of clients connected to this instance.
-  static final List<Socket> _clients = [];
+  final List<Socket> _clients = [];
+
+  /// The name of this pipe.
+  late String _name;
+
+  /// Get the name of this pipe.
+  String get name => _name;
 
   /// Initializes the messaging system with a `port` to use.
   /// This makes it possible for the "server" (this process)
   /// to send and receive [Message]s using the other methods
   /// provided by this class.
-  static void init(int port) {
+  Future<void> _init(int port) async {
+    _name = "MessageHandler-$port";
+
     ServerSocket.bind('localhost', port).then((serverSocket) {
       // Handle successful server startup. >>
       print('Server listening on ${serverSocket.address}:${serverSocket.port}');
 
+      // Add this instance.
+      _instances[name] = port;
+
       // Handle connection of a client.
       serverSocket.listen((clientSocket) {
-        print('Client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
-        _clients.add(clientSocket);
+        if (!_clients.contains(clientSocket)) {
+          _clients.add(clientSocket);
+          print('New client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
 
-        // Listen for messages from the client & invoke the 'receive' event.
-        clientSocket.listen((data) {
-          var request = String.fromCharCodes(data).trim();
-          print('Received request from client (${clientSocket.remoteAddress}:${clientSocket.remotePort}): $request');
-          receive.broadcast(Values(Message.fromString(request), clientSocket));
-        }, onDone: () {
-          _handleClientDisconnection(clientSocket);
-        });
+          // Listen for messages from the client & invoke the 'receive' event.
+          clientSocket.listen((data) {
+            var request = String.fromCharCodes(data).trim();
+            print('Received request from client (${clientSocket.remoteAddress}:${clientSocket.remotePort}): $request');
+            receive.broadcast(Values(Message.fromString(request), clientSocket));
+          }, onDone: () {
+            // When the client disconnects.
+            _handleClientDisconnection(clientSocket);
+          });
+        }
       });
     }).catchError((error) {
+      // Remove this instance.
+      _instances.remove(name);
+
       // Handle failed server startup. >>
       print('Failed to start server: $error');
     });
   }
 
   /// Handle the disconnection of a client, a client needs
-  /// to connect to send messages.
-  static void _handleClientDisconnection(Socket clientSocket) {
+  /// to connect first to send messages.
+  void _handleClientDisconnection(Socket clientSocket) {
     print('Client disconnected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
     _clients.remove(clientSocket);
   }
 
   /// Stops the "server" (this process) and cleans everything up.
   /// After this method is called, [Message]s can no longer
-  /// be sent or received.
-  static void clean() async {
+  /// be sent or received from/to this instance.
+  void clean() async {
+    // Remove this instance.
+    _instances.remove(_name);
+
     for (Socket clientSocket in _clients) {
       clientSocket.flush();
       clientSocket.close();
@@ -71,10 +104,9 @@ class JappeOSMessaging {
   }
 
   /// Sends a [Message] object to another process listening on
-  /// the `port` port. A message can contain a lot of data,
-  /// see: [Message].
-  static Future<MessageOperationResult> send(Message msg, int port) {
-    Socket.connect('localhost', port).then((socket) {
+  /// `port`. A message can contain a lot of data, see: [Message].
+  Future<MessageOperationResult> send(int port, Message msg) {
+    Socket.connect('localhost', port, timeout: Duration(seconds: 5)).then((socket) {
       // Connect, Write, Disconnect.
       socket.write(msg.toString());
       socket.flush();
@@ -87,17 +119,18 @@ class JappeOSMessaging {
     });
 
     // If nothing is returned here yet, it is obviously an error.
+    print('Failed to send message: Unknown Error');
     return Future.value(MessageOperationResult.error(null));
   }
 
   /// An [Event] that can be listened to. Listen for [Message]s
   /// sent to this instance, a message can contain a lot of data,
   /// see: [Message]. For the use of the event system, see: [Event].
-  static final receive = Event<Values<Message, Socket>>();
+  final receive = Event<Values<Message, Socket>>();
 }
 
 /// A message that can be first sent, then received somewhere else.
-/// See [JappeOSMessaging.send] and [JappeOSMessaging.receive] for
+/// See [MessagingPipe.send] and [MessagingPipe.receive] for
 /// using the messaging system to send/receive messages between
 /// separate processes.
 class Message extends EventArgs {
