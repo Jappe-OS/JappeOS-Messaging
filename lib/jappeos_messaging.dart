@@ -122,7 +122,7 @@ class MessagingPipe {
       return Future.value(MessageOperationResult.success());
     }).catchError((error) {
       print('Failed to send message: $error');
-      return Future.value(MessageOperationResult.error(error));
+      return Future.value(MessageOperationResult.error(error.toString()));
     });
 
     // If nothing is returned here yet, it is obviously an error.
