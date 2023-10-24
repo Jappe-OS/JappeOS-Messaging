@@ -124,7 +124,7 @@ class MessagingPipe {
       print('Failed to send message: $error');
       return Future.value(MessageOperationResult.error(error.toString()));
     });
-
+    // TODO: Fix random unknown error message and "Bad state: StreamSink is bound to a stream".
     // If nothing is returned here yet, it is obviously an error.
     print('Failed to send message: Unknown Error');
     return Future.value(MessageOperationResult.error(null));
