@@ -154,34 +154,38 @@ class Message extends EventArgs {
   static Message fromString(String str) {
     Message result = Message(_getSubstringBeforeFirstSpace(str), {});
 
-    var pairs = str.replaceFirst(result.name, "").trim().split(';');
+    var pairs = str.replaceFirst(result.name, "").trim().split(RegExp(r'(?<!\\);'));
     for (var pair in pairs) {
-      var keyValue = pair.split(':');
+      var keyValue = pair.split(RegExp(r'(?<!\\):'));
       if (keyValue.length == 2) {
-        var key = keyValue[0].replaceAll('"', '').trim();
-        var value = keyValue[1].replaceAll(RegExp(r'(?<!\\)"'), '').replaceAll(r'\"', '"').trim();
+        var key = _doIllegalCharacters(keyValue[0].replaceAll(RegExp(r'(?<!\\)"'), ''), false).trim();
+        var value = _doIllegalCharacters(keyValue[1].replaceAll(RegExp(r'(?<!\\)"'), ''), false).trim();
         result.args[key] = value;
       }
     }
 
+    result.name = validateName(result.name, false);
     return result;
   }
 
   /// Converts this [Message] object to a [String] type.
   @override
   String toString() {
-    String result = "${validateName(name)} ";
+    String result = "${validateName(name, true)} ";
 
     args.forEach((key, value) {
-      result += '"$key":"${value.replaceAll('"', r'\"')}";';
+      result += '"${_doIllegalCharacters(key, true)}":"${_doIllegalCharacters(value, true)}";';
     });
 
     return result;
   }
 
   /// Fixes invalid message names.
-  static String validateName(String str) {
-    return str.replaceAll(" ", "-");
+  ///
+  /// If `toEscaped` is true, a `\` will be added before the illegal character,
+  /// if false, it does the opposite.
+  static String validateName(String str, bool toEscaped) {
+    return toEscaped ? str.replaceAll(" ", r"\-") : str.replaceAll(r"\-", " ");
   }
 
   /// Get all text before the first " " letter in a [String].
@@ -191,6 +195,29 @@ class Message extends EventArgs {
       return parts.first;
     }
     return '';
+  }
+
+  /// Add / Remove escape characters from a string with illegal characters.
+  /// This has to be done because the message is sent as a string, and uses
+  /// characters like ":" and ";" to separate parts of the message.
+  ///
+  /// If `toEscaped` is true, a `\` will be added before the illegal character,
+  /// if false, it does the opposite.
+  static String _doIllegalCharacters(String str, bool toEscaped) {
+    String retStr = str;
+    List<String> chars = [r'"', r';', r':'];
+
+    if (toEscaped) {
+      for (var c in chars) {
+        retStr.replaceAll(c, r"\" + c);
+      }
+    } else {
+      for (var c in chars) {
+        retStr.replaceAll(r"\" + c, c);
+      }
+    }
+
+    return retStr;
   }
 
   /// Contruct a [Message] object containing a required name,
