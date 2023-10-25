@@ -61,9 +61,9 @@ class MessagingPipe {
 
       // Handle connection of a client.
       serverSocket.listen((clientSocket) {
-        if (!_clients.any((client) => client.port == clientSocket.port)) {
+        if (!_clients.any((client) => client.port == clientSocket.remotePort)) { // TODO: Not possible to have two clients with same remote port connected.
           _clients.add(clientSocket);
-          print('New client connected: ${clientSocket.address}:${clientSocket.port}');
+          print('New client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
 
           // Start listening for messages from the client & invoke the 'receive' event.
           clientSocket.listen((data) {
@@ -85,14 +85,14 @@ class MessagingPipe {
   /// Handle data received from a connected client.
   void _handleClientData(Socket clientSocket, Uint8List data) async {
     var request = String.fromCharCodes(data).trim();
-    print('Received request from client (${clientSocket.address}:${clientSocket.port}): $request');
+    print('Received request from client (${clientSocket.remoteAddress}:${clientSocket.remotePort}): $request');
     receive.broadcast(Values(Message.fromString(request), clientSocket));
   }
 
   /// Handle the disconnection of a client, a client needs
   /// to connect first to send messages.
   void _handleClientDisconnection(Socket clientSocket) async {
-    print('Client disconnected: ${clientSocket.address}:${clientSocket.port}');
+    print('Client disconnected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
     _clients.remove(clientSocket);
   }
 
@@ -114,10 +114,12 @@ class MessagingPipe {
   /// `port`. A message can contain a lot of data, see: [Message].
   Future<MessageOperationResult> send(int port, Message msg) async {
     Socket.connect('localhost', port, timeout: Duration(seconds: 5)).then((socket) {
+      // TODO: Connecting multiple times using same address and port will work, and the server will treat those as two separate clients (like normally; using different port).
+      
       // Connect, Write, Disconnect.
       socket.write(msg.toString());
-      //socket.flush();
-      //socket.close();
+      socket.flush();
+      socket.close();
       print('Message sent to localhost:$port');
       return Future.value(MessageOperationResult.success());
     }).catchError((error) {
