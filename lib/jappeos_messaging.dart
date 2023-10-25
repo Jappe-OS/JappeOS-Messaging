@@ -61,7 +61,7 @@ class MessagingPipe {
 
       // Handle connection of a client.
       serverSocket.listen((clientSocket) {
-        if (!_clients.contains(clientSocket)) {
+        if (!_clients.any((client) => client.port == clientSocket.port)) {
           _clients.add(clientSocket);
           print('New client connected: ${clientSocket.address}:${clientSocket.port}');
 
