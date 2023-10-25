@@ -205,15 +205,15 @@ class Message extends EventArgs {
   /// if false, it does the opposite.
   static String _doIllegalCharacters(String str, bool toEscaped) {
     String retStr = str;
-    List<String> chars = [r'"', r';', r':'];
+    List<String> chars = ['"', ';', ':'];
 
     if (toEscaped) {
       for (var c in chars) {
-        retStr.replaceAll(c, r"\" + c);
+        retStr = retStr.replaceAll(c, r"\" + c);
       }
     } else {
       for (var c in chars) {
-        retStr.replaceAll(r"\" + c, c);
+        retStr = retStr.replaceAll(r"\" + c, c);
       }
     }
 
