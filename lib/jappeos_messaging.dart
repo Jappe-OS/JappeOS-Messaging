@@ -30,12 +30,23 @@ class MessagingPipe {
   /// Contruct a messaging pipe object.
   /// Calls the init method, see: [_init].
   /// NOTE: Remember to call [clean] after using this [MessagingPipe] to clean up all resources.
-  MessagingPipe(int port, {void Function(dynamic)? onError, void Function()? onDone}) {
-    _init(port, onError, onDone);
+  MessagingPipe(int port, {void Function(dynamic)? onInitError, void Function()? onInitDone}) {
+    _init(port, onInitError, onInitDone);
   }
 
   /// Holds a list of clients connected to this instance.
-  final List<Socket> _clients = [];
+  final List<Socket> _clientsConnected = [];
+
+  /// Holds a list of clients this instance has connected to.
+  ///
+  /// [Socket] is the socket this intance is connected to,
+  /// while [int] is the target port it was first connected to.
+  ///
+  /// [int] is needed because `Socket.remotePort` returns a different
+  /// port than the "target port" (initial port), and we may need to
+  /// check that there aren't multiple connections to the same port.
+  /// The server would still treat them as separate clients as normal.
+  final Map<Socket, int> _connectedTo = {};
 
   /// The name of this pipe.
   late String _name;
@@ -47,23 +58,24 @@ class MessagingPipe {
   /// This makes it possible for the "server" (this process)
   /// to send and receive [Message]s using the other methods
   /// provided by this class.
-  Future<void> _init(int port, void Function(dynamic)? onError, void Function()? onDone) async {
+  Future<void> _init(int port, void Function(dynamic)? onInitError, void Function()? onInitDone) async {
     _name = "MessageHandler-$port";
 
     ServerSocket.bind('localhost', port).then((serverSocket) {
       // Handle successful server startup. >>
-      print('Server listening on ${serverSocket.address}:${serverSocket.port}');
+      print('Server listening on: ${serverSocket.address}:${serverSocket.port}');
 
       // Add this instance.
       _instances[name] = port;
 
-      if (onDone != null) onDone();
+      if (onInitDone != null) onInitDone();
 
-      // Handle connection of a client.
+      // Handle connection of a client that is connecting to this instance.
       serverSocket.listen((clientSocket) {
-        if (!_clients.any((client) => client.port == clientSocket.remotePort)) { // TODO: Not possible to have two clients with same remote port connected.
-          _clients.add(clientSocket);
-          print('New client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
+        if (!_clientsConnected.any((client) => client.port == clientSocket.remotePort)) {
+          // TODO: Not possible to have two clients with same remote port connected.
+          print('New remote client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
+          _clientsConnected.add(clientSocket);
 
           // Start listening for messages from the client & invoke the 'receive' event.
           clientSocket.listen((data) {
@@ -76,65 +88,97 @@ class MessagingPipe {
       });
     }).catchError((error) {
       // Handle failed server startup. >>
-      if (onError != null) onError(error);
+      if (onInitError != null) onInitError(error);
       clean();
       print('Failed to start server: $error');
     });
   }
 
-  /// Handle data received from a connected client.
+  /// Handle data received from a client connected to this instance.
   void _handleClientData(Socket clientSocket, Uint8List data) async {
     var request = String.fromCharCodes(data).trim();
-    print('Received request from client (${clientSocket.remoteAddress}:${clientSocket.remotePort}): $request');
+    print('Received request from remote instance (${clientSocket.remoteAddress}:${clientSocket.remotePort}): $request');
     receive.broadcast(Values(Message.fromString(request), clientSocket));
   }
 
-  /// Handle the disconnection of a client, a client needs
-  /// to connect first to send messages.
+  /// Handle the disconnection of a client coonected to this instance,
+  /// a client needs to connect first to send messages.
   void _handleClientDisconnection(Socket clientSocket) async {
     print('Client disconnected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
-    _clients.remove(clientSocket);
+    _clientsConnected.remove(clientSocket);
   }
 
-  /// Stops the "server" (this process) and cleans everything up.
+  /// Stops this "server" (this process) and cleans everything up.
   /// After this method is called, [Message]s can no longer
   /// be sent or received from/to this instance.
   void clean() async {
     // Remove this instance.
     _instances.remove(_name);
 
-    for (Socket clientSocket in _clients) {
-      clientSocket.flush();
-      clientSocket.close();
+    // Close all socket connections connected to this instance.
+    for (Socket obj in _clientsConnected) {
+      obj.close();
     }
-    _clients.clear();
+    _clientsConnected.clear();
+
+    // Close all socket connections this instance has connected to.
+    _connectedTo.forEach((obj, orgPort) {
+      obj.close();
+    });
+    _connectedTo.clear();
   }
 
-  /// Sends a [Message] object to another process listening on
+  /// Sends a [Message] object to a remote instance listening on
   /// `port`. A message can contain a lot of data, see: [Message].
   Future<MessageOperationResult> send(int port, Message msg) async {
-    Socket.connect('localhost', port, timeout: Duration(seconds: 5)).then((socket) {
-      // TODO: Connecting multiple times using same address and port will work, and the server will treat those as two separate clients (like normally; using different port).
-      
-      // Connect, Write, Disconnect.
-      socket.write(msg.toString());
-      socket.flush();
-      socket.close();
-      print('Message sent to localhost:$port');
-      return Future.value(MessageOperationResult.success());
-    }).catchError((error) {
-      print('Error occurred while sending message: $error');
-      return Future.value(MessageOperationResult.error(error.toString()));
-    });
-    // TODO: Fix random unknown error message and "Bad state: StreamSink is bound to a stream".
-    // If nothing is returned here yet, it is obviously an error.
-    //print('Failed to send message: Unknown Error');
+    Socket? socket = await _connectTo(port);
+
+    if (socket == null) {
+      print('Failed to send message to remote instance due to connection error! Target port: $port');
+      return MessageOperationResult.error(null);
+    }
+
+    socket.write(msg.toString());
+    print('Message sent from this instance to [remote instance] (TARGET address and port!): localhost:$port');
     return Future.value(MessageOperationResult.success());
   }
 
+  /// Connect this instance to a remote instance using a `port`.
+  ///
+  /// The returned [Socket] is the socket that this instance
+  /// connected to.
+  /// The connection has failed if the [Socket] is `null`.
+  Future<Socket?> _connectTo(int port) async { // TODO: Check for multiple connections of same initial/target port!
+    try {
+      Socket socket = await Socket.connect('localhost', port, timeout: Duration(seconds: 5));
+      print('This instance connected to [remote instance] (TARGET address and port!): localhost:$port');
+      _connectedTo[socket] = port;
+      socket.listen((event) {}, onDone: () => _disconnectFrom(socket, true));
+      return socket;
+    } catch (error) {
+      print('Error occurred while connecting this instance to a remote instance: $error');
+      return null;
+    }
+  }
+
+  /// Disconnect this instance from a remote instance.
+  ///
+  /// If `cleanupActionsOnly` is false, a full disconnection and
+  /// cleanup will occur. If true, `Socket.close()` will not be invoked,
+  /// and a normal cleanup will occur. Set to true when using this
+  /// method in the `onDone` field of the `listen` method of a [Socket].
+  Future<void> _disconnectFrom(Socket socket, [bool cleanupActionsOnly = false]) async {
+    if (!_connectedTo.containsKey(socket)) return;
+
+    print('This instance disconnected from [remote instance]: ${socket.remoteAddress}:${socket.remotePort}');
+    _connectedTo.remove(socket);
+    socket.close();
+  }
+
   /// An [Event] that can be listened to. Listen for [Message]s
-  /// sent to this instance, a message can contain a lot of data,
-  /// see: [Message]. For the use of the event system, see: [Event].
+  /// sent from a remote instance to this instance, a message can
+  /// contain a lot of data, see: [Message].
+  /// For the use of the event system, see: [Event].
   final receive = Event<Values<Message, Socket>>();
 }
 
