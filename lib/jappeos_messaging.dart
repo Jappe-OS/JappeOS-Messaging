@@ -18,21 +18,23 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:event/event.dart';
 
+// TODO: Convert from TCP/UDP to Unix!
 /// Use this class to send/receive messages between processes
 /// using the JappeOS messaging system.
 class MessagingPipe {
   /// Holds a static list of all [MessagingPipe] instances created in this app.
-  static final Map<String, int> _instances = <String, int>{};
+  static final List<String> _instances = [];
 
   /// Return the static list of all [MessagingPipe] instances created in this app.
-  static Map<String, int> get instances => _instances;
+  static List<String> get instances => _instances;
 
-  /// Contruct a messaging pipe object.
-  /// Calls the init method, see: [_init].
-  /// NOTE: Remember to call [clean] after using this [MessagingPipe] to clean up all resources.
-  MessagingPipe(int port, {void Function(dynamic)? onInitError, void Function()? onInitDone}) {
-    _init(port, onInitError, onInitDone);
+  /// A private constructor to construct with name.
+  MessagingPipe._(String name) {
+    _name = name;
   }
+
+  /// The server of this messaging pipe.
+  late ServerSocket _serverSocket;
 
   /// Holds a list of clients connected to this instance.
   final List<Socket> _clientsConnected = [];
@@ -41,12 +43,7 @@ class MessagingPipe {
   ///
   /// [Socket] is the socket this intance is connected to,
   /// while [int] is the target port it was first connected to.
-  ///
-  /// [int] is needed because `Socket.remotePort` returns a different
-  /// port than the "target port" (initial port), and we may need to
-  /// check that there aren't multiple connections to the same port.
-  /// The server would still treat them as separate clients as normal.
-  final Map<Socket, int> _connectedTo = {};
+  final List<Socket> _connectedTo = [];
 
   /// The name of this pipe.
   late String _name;
@@ -54,64 +51,87 @@ class MessagingPipe {
   /// Get the name of this pipe.
   String get name => _name;
 
-  /// Initializes the messaging system with a `port` to use.
+  /// Get the address of this pipe.
+  String get address => _serverSocket.address.address;
+
+  /// Get a list of addresses of remote instances connected to this instance.
+  List<String> get connectedFromAddresses => _clientsConnected.map((socket) => socket.address.address).toList();
+
+  /// Get a list of addresses that this instance is connected to.
+  List<String> get connectedToAddresses => _connectedTo.map((socket) => socket.address.address).toList();
+
+  /// Initializes the messaging system with a `name` to use.
   /// This makes it possible for the "server" (this process)
   /// to send and receive [Message]s using the other methods
   /// provided by this class.
-  Future<void> _init(int port, void Function(dynamic)? onInitError, void Function()? onInitDone) async {
-    _name = "MessageHandler-$port";
+  ///
+  /// [MessagingPipe] will return null if an error has occurred.
+  ///
+  /// NOTE: Remember to call [clean] after using this [MessagingPipe] to clean up all resources.
+  static Future<MessagingPipe?> init(String name) async {
+    if (!Platform.isLinux) {
+      throw Exception("Unsupported platform! 'Platform.isLinux' returned false.");
+    } else if (_instances.contains(name)) {
+      throw Exception("A messaging pipe with the name '$name' is already initialised!");
+    }
 
-    ServerSocket.bind('localhost', port).then((serverSocket) async {
-      // Handle successful server startup. >>
-      print('Server listening on: ${serverSocket.address}:${serverSocket.port}');
+    MessagingPipe thisObj = MessagingPipe._("MessageHandler-$name");
+    InternetAddress address;
+    var runtimeDir = Platform.environment['XDG_RUNTIME_DIR'];
 
-      // Add this instance.
-      _instances[name] = port;
+    if (runtimeDir == null) throw Exception("The environment variable 'XDG_RUNTIME_DIR' returned null.");
+    address = InternetAddress('$runtimeDir/$name', type: InternetAddressType.unix);
 
-      if (onInitDone != null) onInitDone();
-
-      // Handle connection of a client that is connecting to this instance.
-      serverSocket.listen((clientSocket) async {
-        print('New remote client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
-        _clientsConnected.add(clientSocket);
-
-        // Start listening for messages from the client & invoke the 'receive' event.
-        clientSocket.listen((data) async {
-          _handleClientData(clientSocket, data);
-        }, onDone: () async {
-          // When the client disconnects.
-          _handleClientDisconnection(clientSocket);
-        });
-      });
-    }).catchError((error) {
+    try {
+      thisObj._serverSocket = await ServerSocket.bind(address, 0);
+    } catch (e) {
       // Handle failed server startup. >>
-      if (onInitError != null) onInitError(error);
-      clean();
-      print('Failed to start server: $error');
+      thisObj.clean();
+      print('Failed to start server: $e');
+      return Future.value(null);
+    }
+
+    // Handle successful server startup. >>
+    print('Server listening on: ${address.address}');
+
+    // Add this instance.
+    _instances.add(address.address);
+
+    // Handle connection of a client that is connecting to this instance.
+    thisObj._serverSocket.listen((clientSocket) async {
+      print('New remote client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
+      thisObj._clientsConnected.add(clientSocket);
+
+      // Start listening for messages from the client & invoke the 'receive' event.
+      clientSocket.listen((data) async {
+        thisObj._handleClientData(clientSocket, data);
+      }, onDone: () async {
+        // When the client disconnects.
+        thisObj._handleClientDisconnection(clientSocket);
+      });
     });
+
+    return Future.value(thisObj);
   }
 
   /// Handle data received from a client connected to this instance.
   void _handleClientData(Socket clientSocket, Uint8List data) async {
     var request = String.fromCharCodes(data).trim();
-    print('Received request from remote instance (${clientSocket.remoteAddress}:${clientSocket.remotePort}): $request');
-    receive.broadcast(MessageEventArgs(clientSocket, Message.fromString(request)));
+    print('Received request from remote instance (${clientSocket.address.address}): $request');
+    receiveAll.broadcast(MessageEventArgs(clientSocket, Message.fromString(request)));
   }
 
   /// Handle the disconnection of a client coonected to this instance,
   /// a client needs to connect first to send messages.
   void _handleClientDisconnection(Socket clientSocket) async {
-    print('Client disconnected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
+    print('Client disconnected: ${clientSocket.address.address}');
     _clientsConnected.remove(clientSocket);
   }
 
-  /// Stops this "server" (this process) and cleans everything up.
+  /// Stops this "server" (this instance) and cleans everything up.
   /// After this method is called, [Message]s can no longer
   /// be sent or received from/to this instance.
   void clean() async {
-    // Remove this instance.
-    _instances.remove(_name);
-
     // Close all socket connections connected to this instance.
     for (Socket obj in _clientsConnected) {
       obj.close();
@@ -119,46 +139,50 @@ class MessagingPipe {
     _clientsConnected.clear();
 
     // Close all socket connections this instance has connected to.
-    _connectedTo.forEach((obj, orgPort) async {
+    for (Socket obj in _connectedTo) {
       obj.close();
-    });
+    }
     _connectedTo.clear();
+
+    // Remove this instance.
+    print('Server closed on: ${_serverSocket.address.address}');
+    _instances.remove(_name);
+    _serverSocket.close();
   }
 
   /// Sends a [Message] object to a remote instance listening on
-  /// `port`. A message can contain a lot of data, see: [Message].
-  Future<MessageOperationResult> send(int port, Message msg) async {
-    Socket? socket = await _connectTo(port);
+  /// `address`. A message can contain a lot of data, see: [Message].
+  Future<MessageOperationResult> send(String address, Message msg) async {
+    Socket? socket = await _connectTo(address);
 
     if (socket == null) {
-      print('Failed to send message to remote instance due to connection error! Target port: $port');
+      print('Failed to send message to remote instance due to connection error! Target address: $address');
       return Future.value(MessageOperationResult.error(null));
     }
 
     socket.write(msg.toString());
-    print('Message sent from this instance to [remote instance] (TARGET address and port!): localhost:$port');
+    print('Message sent from this instance to [remote instance] (TARGET address!): $address');
     return Future.value(MessageOperationResult.success());
   }
 
-  /// Connect this instance to a remote instance using a `port`.
+  /// Connect this instance to a remote instance using an `address`.
   ///
   /// The returned [Socket] is the socket that this instance
   /// connected to.
   /// The connection has failed if the [Socket] is `null`.
-  Future<Socket?> _connectTo(int port) async {
-    // Check for multiple connections from this instance to the same initial port.
-    // The port will be different when using 'remotePort' for example.
-    if (_connectedTo.containsValue(port)) {
+  Future<Socket?> _connectTo(String address) async {
+    // Check for multiple connections from this instance to the same initial address.
+    if (_connectedTo.any((s) => s.address.address == address)) {
       print(
-          'Error occurred while connecting this instance to a remote instance (TARGET address and port!): localhost:$port. Initial port is already in use! Returning original Socket instead.');
-      return Future.value(_connectedTo.keys.firstWhere((k) => _connectedTo[k] == port));
+          'Error occurred while connecting this instance to a remote instance (TARGET address!): $address. Initial address is already in use! Returning original Socket instead.');
+      return Future.value(_connectedTo.firstWhere((s) => s.address.address == address));
     }
 
     try {
-      Socket socket = await Socket.connect('localhost', port, timeout: Duration(seconds: 5));
-      print('This instance connected to [remote instance] (TARGET address and port!): localhost:$port');
-      _connectedTo[socket] = port;
-      socket.listen((_) {}, onDone: () async => _disconnectFrom(socket, true));
+      Socket socket = await Socket.connect(InternetAddress(address, type: InternetAddressType.unix), 0, timeout: Duration(seconds: 5));
+      print('This instance connected to [remote instance] (TARGET address!): $address');
+      _connectedTo.add(socket);
+      socket.listen((_) {}, onDone: () async => _disconnectFrom(socket));
       return Future.value(socket);
     } catch (error) {
       print('Error occurred while connecting this instance to a remote instance: $error');
@@ -167,15 +191,10 @@ class MessagingPipe {
   }
 
   /// Disconnect this instance from a remote instance.
-  ///
-  /// If `cleanupActionsOnly` is false, a full disconnection and
-  /// cleanup will occur. If true, `Socket.close()` will not be invoked,
-  /// and a normal cleanup will occur. Set to true when using this
-  /// method in the `onDone` field of the `listen` method of a [Socket].
-  Future<void> _disconnectFrom(Socket socket, [bool cleanupActionsOnly = false]) async {
-    if (!_connectedTo.containsKey(socket)) return;
+  Future<void> _disconnectFrom(Socket socket) async {
+    if (!_connectedTo.contains(socket)) return;
 
-    print('This instance disconnected from [remote instance]: ${socket.remoteAddress}:${socket.remotePort}');
+    print('This instance disconnected from [remote instance]: ${socket.address.address}');
     _connectedTo.remove(socket);
     socket.close();
   }
@@ -184,7 +203,16 @@ class MessagingPipe {
   /// sent from a remote instance to this instance, a message can
   /// contain a lot of data, see: [Message].
   /// For the use of the event system, see: [Event].
-  final receive = Event<MessageEventArgs>();
+  final receiveAll = Event<MessageEventArgs>();
+
+  /// Uses [Event].
+  /// Listen for [Message]s sent from a remote instance to this instance
+  /// using a specific port, a message can contain a lot of data, see: [Message].
+  void receive(String address, void Function(MessageEventArgs?) handler) {
+    receiveAll.subscribe((p0) {
+      if (p0!.from.address.address == address) handler(p0);
+    });
+  }
 }
 
 /// A message that can be first sent, then received somewhere else.
