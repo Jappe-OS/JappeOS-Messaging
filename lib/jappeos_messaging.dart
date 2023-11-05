@@ -74,7 +74,7 @@ class MessagingPipe {
       throw Exception("A messaging pipe with the name '$name' is already initialised!");
     }
 
-    MessagingPipe thisObj = MessagingPipe._("MessageHandler-$name");
+    MessagingPipe thisObj = MessagingPipe._(name);
     InternetAddress address;
     var runtimeDir = Platform.environment['XDG_RUNTIME_DIR'];
 
@@ -102,7 +102,7 @@ class MessagingPipe {
 
     // Handle connection of a client that is connecting to this instance.
     thisObj._serverSocket.listen((clientSocket) async {
-      print('New remote client connected: ${clientSocket.remoteAddress.address}');
+      print('New remote client connected: ${clientSocket.remoteAddress.address} Test: (remoteaddr: ${clientSocket.remoteAddress}, raw: ${clientSocket.remoteAddress.rawAddress})');
       thisObj._clientsConnected.add(clientSocket);
 
       // Start listening for messages from the client & invoke the 'receive' event.
