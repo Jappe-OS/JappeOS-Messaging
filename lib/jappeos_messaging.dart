@@ -18,7 +18,6 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:event/event.dart';
 
-// TODO: Convert from TCP/UDP to Unix!
 /// Use this class to send/receive messages between processes
 /// using the JappeOS messaging system.
 class MessagingPipe {
@@ -68,7 +67,7 @@ class MessagingPipe {
   /// [MessagingPipe] will return null if an error has occurred.
   ///
   /// NOTE: Remember to call [clean] after using this [MessagingPipe] to clean up all resources.
-  static Future<MessagingPipe?> init(String name) async {
+  static Future<MessagingPipe?> init(String name, [bool useCustomDirectory = false]) async {
     if (!Platform.isLinux) {
       throw Exception("Unsupported platform! 'Platform.isLinux' returned false.");
     } else if (_instances.contains(name)) {
@@ -79,8 +78,12 @@ class MessagingPipe {
     InternetAddress address;
     var runtimeDir = Platform.environment['XDG_RUNTIME_DIR'];
 
-    if (runtimeDir == null) throw Exception("The environment variable 'XDG_RUNTIME_DIR' returned null.");
-    address = InternetAddress('$runtimeDir/$name', type: InternetAddressType.unix);
+    if (useCustomDirectory) {
+      address = InternetAddress(name, type: InternetAddressType.unix);
+    } else {
+      if (runtimeDir == null) throw Exception("The environment variable 'XDG_RUNTIME_DIR' returned null.");
+      address = InternetAddress('$runtimeDir/$name', type: InternetAddressType.unix);
+    }
 
     try {
       thisObj._serverSocket = await ServerSocket.bind(address, 0);
