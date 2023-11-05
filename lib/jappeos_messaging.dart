@@ -102,7 +102,7 @@ class MessagingPipe {
 
     // Handle connection of a client that is connecting to this instance.
     thisObj._serverSocket.listen((clientSocket) async {
-      print('New remote client connected: ${clientSocket.remoteAddress}:${clientSocket.remotePort}');
+      print('New remote client connected: ${clientSocket.address.address}');
       thisObj._clientsConnected.add(clientSocket);
 
       // Start listening for messages from the client & invoke the 'receive' event.
