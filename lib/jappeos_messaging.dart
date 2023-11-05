@@ -20,6 +20,7 @@ import 'package:event/event.dart';
 
 /// Use this class to send/receive messages between processes
 /// using the JappeOS messaging system.
+/// TODO: Double check MessageAddress usage in code.
 class MessagingPipe {
   /// Holds a static list of all [MessagingPipe] instances created in this app.
   static final List<String> _instances = [];
@@ -102,7 +103,8 @@ class MessagingPipe {
 
     // Handle connection of a client that is connecting to this instance.
     thisObj._serverSocket.listen((clientSocket) async {
-      print('New remote client connected: ${clientSocket.remoteAddress.address} Test: (remoteaddr: ${clientSocket.remoteAddress}, raw: ${clientSocket.remoteAddress.rawAddress})');
+      print(
+          'New remote client connected: ${clientSocket.remoteAddress.address} Test: (remoteaddr: ${clientSocket.remoteAddress}, raw: ${clientSocket.remoteAddress.rawAddress})');
       thisObj._clientsConnected.add(clientSocket);
 
       // Start listening for messages from the client & invoke the 'receive' event.
@@ -135,6 +137,8 @@ class MessagingPipe {
   /// After this method is called, [Message]s can no longer
   /// be sent or received from/to this instance.
   void clean() async {
+    receiveAll.unsubscribeAll();
+
     // Close all socket connections connected to this instance.
     for (Socket obj in _clientsConnected) {
       obj.close();
@@ -163,6 +167,7 @@ class MessagingPipe {
       return Future.value(MessageOperationResult.error(null));
     }
 
+    msg._fromToAddr = MessageAddress(address);
     socket.write(msg.toString());
     print('Message sent from this instance to [remote instance] (TARGET address!): $address');
     return Future.value(MessageOperationResult.success());
@@ -176,8 +181,8 @@ class MessagingPipe {
   Future<Socket?> _connectTo(String address) async {
     // Check for multiple connections from this instance to the same initial address.
     if (_connectedTo.any((s) => s.remoteAddress.address == address)) {
-      print(
-          'Error occurred while connecting this instance to a remote instance (TARGET address!): $address. Initial address is already in use! Returning original Socket instead.');
+      //print(
+      //    'Error occurred while connecting this instance to a remote instance (TARGET address!): $address. Initial address is already in use! Returning original Socket instead.');
       return Future.value(_connectedTo.firstWhere((s) => s.remoteAddress.address == address));
     }
 
@@ -213,7 +218,7 @@ class MessagingPipe {
   /// using a specific port, a message can contain a lot of data, see: [Message].
   void receive(String address, void Function(MessageEventArgs?) handler) {
     receiveAll.subscribe((p0) {
-      if (p0!.from.remoteAddress.address == address) handler(p0);
+      if (p0!.data._fromToAddr.getAddress() == address) handler(p0);
     });
   }
 }
@@ -227,6 +232,9 @@ class Message {
   /// This name should also be unique, to be sure, numbers can be used
   /// as a prefix/suffix if needed.
   String name;
+
+  /// The address this message was sent from, or will be sent to.
+  MessageAddress _fromToAddr = MessageAddress(null);
 
   /// The arguments of the message, can be left empty. Key & Value.
   /// These args are used to transport data alongside the message.
@@ -246,6 +254,11 @@ class Message {
       }
     }
 
+    // Special keyvalue pair: address
+    if (MessageAddress(result.args["__MSGDAT_ADDRESS__"]).getAddress() != null) {
+      result._fromToAddr = MessageAddress(result.args["__MSGDAT_ADDRESS__"]);
+    }
+
     result.name = validateName(result.name, false);
     return result;
   }
@@ -254,6 +267,11 @@ class Message {
   @override
   String toString() {
     String result = "${validateName(name, true)} ";
+
+    // Special keyvalue pair: address
+    if (_fromToAddr.getAddress() != null) {
+      args["__MSGDAT_ADDRESS__"] = _fromToAddr.getAddress()!;
+    }
 
     args.forEach((key, value) {
       result += '"${_doIllegalCharacters(key, true)}":"${_doIllegalCharacters(value, true)}";';
@@ -306,6 +324,26 @@ class Message {
   /// the name should not have any blank spaces. `args` can
   /// be empty, not null.
   Message(this.name, this.args);
+}
+
+/// The address that gets sent within a [Message]. The address is the path
+/// to the Unix Domain Socket file.
+class MessageAddress {
+  static const String errMsg = "Invoking 'toString()' on an instance of MessageAddress is not supported! Use 'getAddress()' instead.";
+  final String? _address;
+
+  /// Returns null if the address is invalid.
+  String? getAddress() {
+    if (_address == null || _address == "") return null;
+
+    return _address!.trim().replaceAll(r"\", "/");
+  }
+
+  @Deprecated(errMsg)
+  @override
+  String toString() => throw Exception(errMsg);
+
+  const MessageAddress(this._address);
 }
 
 /// [EventArgs] for receiving messages from a remote instance. Contains all
