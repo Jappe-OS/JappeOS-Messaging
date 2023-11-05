@@ -54,10 +54,10 @@ class MessagingPipe {
   String get address => _serverSocket.address.address;
 
   /// Get a list of addresses of remote instances connected to this instance.
-  List<String> get connectedFromAddresses => _clientsConnected.map((socket) => socket.address.address).toList();
+  List<String> get connectedFromAddresses => _clientsConnected.map((socket) => socket.remoteAddress.address).toList();
 
   /// Get a list of addresses that this instance is connected to.
-  List<String> get connectedToAddresses => _connectedTo.map((socket) => socket.address.address).toList();
+  List<String> get connectedToAddresses => _connectedTo.map((socket) => socket.remoteAddress.address).toList();
 
   /// Initializes the messaging system with a `name` to use.
   /// This makes it possible for the "server" (this process)
@@ -102,7 +102,7 @@ class MessagingPipe {
 
     // Handle connection of a client that is connecting to this instance.
     thisObj._serverSocket.listen((clientSocket) async {
-      print('New remote client connected: ${clientSocket.address.address}');
+      print('New remote client connected: ${clientSocket.remoteAddress.address}');
       thisObj._clientsConnected.add(clientSocket);
 
       // Start listening for messages from the client & invoke the 'receive' event.
@@ -120,14 +120,14 @@ class MessagingPipe {
   /// Handle data received from a client connected to this instance.
   void _handleClientData(Socket clientSocket, Uint8List data) async {
     var request = String.fromCharCodes(data).trim();
-    print('Received request from remote instance (${clientSocket.address.address}): $request');
+    print('Received request from remote instance (${clientSocket.remoteAddress.address}): $request');
     receiveAll.broadcast(MessageEventArgs(clientSocket, Message.fromString(request)));
   }
 
   /// Handle the disconnection of a client coonected to this instance,
   /// a client needs to connect first to send messages.
   void _handleClientDisconnection(Socket clientSocket) async {
-    print('Client disconnected: ${clientSocket.address.address}');
+    print('Client disconnected: ${clientSocket.remoteAddress.address}');
     _clientsConnected.remove(clientSocket);
   }
 
@@ -175,10 +175,10 @@ class MessagingPipe {
   /// The connection has failed if the [Socket] is `null`.
   Future<Socket?> _connectTo(String address) async {
     // Check for multiple connections from this instance to the same initial address.
-    if (_connectedTo.any((s) => s.address.address == address)) {
+    if (_connectedTo.any((s) => s.remoteAddress.address == address)) {
       print(
           'Error occurred while connecting this instance to a remote instance (TARGET address!): $address. Initial address is already in use! Returning original Socket instead.');
-      return Future.value(_connectedTo.firstWhere((s) => s.address.address == address));
+      return Future.value(_connectedTo.firstWhere((s) => s.remoteAddress.address == address));
     }
 
     try {
@@ -197,7 +197,7 @@ class MessagingPipe {
   Future<void> _disconnectFrom(Socket socket) async {
     if (!_connectedTo.contains(socket)) return;
 
-    print('This instance disconnected from [remote instance]: ${socket.address.address}');
+    print('This instance disconnected from [remote instance]: ${socket.remoteAddress.address}');
     _connectedTo.remove(socket);
     socket.close();
   }
@@ -213,7 +213,7 @@ class MessagingPipe {
   /// using a specific port, a message can contain a lot of data, see: [Message].
   void receive(String address, void Function(MessageEventArgs?) handler) {
     receiveAll.subscribe((p0) {
-      if (p0!.from.address.address == address) handler(p0);
+      if (p0!.from.remoteAddress.address == address) handler(p0);
     });
   }
 }
