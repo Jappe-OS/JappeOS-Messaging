@@ -18,6 +18,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:event/event.dart';
+import 'package:uuid/uuid.dart';
 
 /// Use to represent **unknown** values in [String] objects that are either logged
 /// to the console, or used in an exception.
@@ -232,7 +233,14 @@ class MessagingPipe {
 
   /// Sends a [Message] object to a remote instance listening on `address`.
   /// A message can contain a lot of data, see: [Message].
-  Future<MessageOperationResult> send(String address, Message msg) async {
+  /// 
+  /// Keeping `callback` as null will make this message not receive a callback.
+  /// 
+  /// Setting `answerToUUID` will declare this message as a callback/answer to
+  /// another message.
+  Future<MessageOperationResult> send(String address, Message msg, {Message Function()? callback, List<int>? answerToUUID}) async {
+    assert(callback == null || answerToUUID == null); // <-- TODO needed?  Other things have to be modified to disallow having a send-to and a answer UUID
+
     address = MessagingAddress(address).getAddress(true) ?? "";
     Socket? socket = await _connectTo(address);
 
@@ -329,6 +337,25 @@ class _SpecialMessageArgs {
   /// The value of this address should contain the address the message came from.
   // ignore: constant_identifier_names
   static const kMSG_ARG_MsgAddress = "__MSGDAT_ADDRESS__";
+
+  /// The ARGUMENT (key) name of a unique callback ID in a message.
+  /// These can be used to identify messages from each other. Mainly used for
+  /// messages that need an answer back from the remote instance.
+  ///
+  /// This is the send-to variant of the callback ID. This will be sent to a
+  /// remote instance, afterwhich, we will wait for an answer with a matching
+  /// '__MSGDAT_CBUUID_ANSWER__' ID.
+  // ignore: constant_identifier_names
+  static const kMSG_ARG_MsgCallbackUUIDsendto = "__MSGDAT_CBUUID_SENDTO__";
+
+  /// The ARGUMENT (key) name of a unique callback ID in a message.
+  /// These can be used to identify messages from each other. Mainly used for
+  /// messages that need an answer back from the remote instance.
+  ///
+  /// This is the answer variant of the callback ID. This will be the same as a
+  /// '__MSGDAT_CBUUID_SENDTO__' arg of a specific message.
+  // ignore: constant_identifier_names
+  static const kMSG_ARG_MsgCallbackUUIDanswer = "__MSGDAT_CBUUID_ANSWER__";
 }
 
 /// A message that can be first sent, then received somewhere else.
@@ -342,6 +369,13 @@ class Message {
 
   /// The address this message was sent from, or will be sent to.
   MessagingAddress _fromToAddr = MessagingAddress(null);
+
+  /// Callback ID to send and wait for an answer [Message] that has this ID as
+  /// its 'answerCallbackUUID'.
+  List<int>? _sendToCallbackUUID;
+
+  /// Answer ID to a [Message] with this 'sendToCallbackUUID'.
+  List<int>? _answerCallbackUUID;
 
   /// The arguments of the message, can be left empty. Key & Value.
   /// These args are used to transport data alongside the message.
@@ -366,6 +400,16 @@ class Message {
       result._fromToAddr = MessagingAddress(result.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]);
     }
 
+    // Special keyvalue pair: send-to callback ID TODO
+    if (result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDsendto] != null) {
+      result._sendToCallbackUUID = Uuid.parse(result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDsendto]!);
+    }
+
+    // Special keyvalue pair: answer callback ID TODO
+    if (result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDanswer] != null) {
+      result._answerCallbackUUID = Uuid.parse(result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDanswer]!);
+    }
+
     result.name = validateName(result.name, false);
     return result;
   }
@@ -378,6 +422,16 @@ class Message {
     // Special keyvalue pair: address
     if (_fromToAddr.getAddress() != null) {
       args[_SpecialMessageArgs.kMSG_ARG_MsgAddress] = _fromToAddr.getAddress()!;
+    }
+
+    // Special keyvalue pair: send-to callback ID TODO
+    if (_sendToCallbackUUID != null) {
+      args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDsendto] = Uuid.unparse(_sendToCallbackUUID!);
+    }
+
+    // Special keyvalue pair: answer callback ID TODO
+    if (_answerCallbackUUID != null) {
+      args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDanswer] = Uuid.unparse(_answerCallbackUUID!);
     }
 
     args.forEach((key, value) {
@@ -429,7 +483,9 @@ class Message {
 
   /// Contruct a [Message] object containing a required name, the name should
   /// not have any blank spaces. `args` can be empty, not null.
-  Message(this.name, this.args);
+  Message(this.name, this.args, {List<int>? sendToCallbackUUID, List<int>? answerCallbackUUID})
+      : _sendToCallbackUUID = sendToCallbackUUID,
+        _answerCallbackUUID = answerCallbackUUID;
 }
 
 /// The address that gets sent within a [Message]. The address is the path to

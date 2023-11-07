@@ -9,6 +9,7 @@ environment:
 # Add regular dependencies here.
 dependencies:
   event: ^2.1.2
+  uuid: ^4.2.0
   # path: ^1.8.0
 
 dev_dependencies:
