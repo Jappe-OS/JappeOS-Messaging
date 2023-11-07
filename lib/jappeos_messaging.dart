@@ -14,13 +14,21 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:event/event.dart';
 
-/// Use this class to send/receive messages between processes
-/// using the JappeOS messaging system.
-/// TODO: Double check MessageAddress usage in code.
+/// Use to represent **unknown** values in [String] objects that are either logged
+/// to the console, or used in an exception.
+const _kUnknownPlaceholder = "<unknown>";
+
+/// Use to represent **invalid** values in [String] objects that are either logged
+/// to the console, or used in an exception.
+const _kInvalidPlaceholder = "<invalid>";
+
+/// Use this class to send/receive messages between processes using the JappeOS
+/// messaging system.
 class MessagingPipe {
   /// Holds a static list of all [MessagingPipe] instances created in this app.
   static final List<String> _instances = [];
@@ -36,17 +44,20 @@ class MessagingPipe {
   /// The server of this messaging pipe.
   late ServerSocket _serverSocket;
 
+  /// The servers [StreamSubscription] that listens to data from clients.
+  late StreamSubscription<Socket> _serverListenerSubscription;
+
   /// Holds a list of clients connected to this instance.
-  /// 
+  ///
   /// [Socket] is the socket that has connected to this instance.
-  /// 
+  ///
   /// [MessagingAddress] is the address of the socket which connected to this instance.
   final Map<Socket, MessagingAddress> _clientsConnected = {};
 
   /// Holds a list of clients this instance has connected to.
   ///
   /// [Socket] is the socket this intance is connected to.
-  /// 
+  ///
   /// [MessagingAddress] is the address this instance is connected to.
   final Map<Socket, MessagingAddress> _connectedTo = {};
 
@@ -66,15 +77,14 @@ class MessagingPipe {
   List<String?> get connectedToAddresses => _connectedTo.values.toList().map((address) => address.getAddress()).toList();
 
   /// Initializes the messaging system with a `name` to use.
-  /// This makes it possible for the "server" (this process)
-  /// to send and receive [Message]s using the other methods
-  /// provided by this class.
+  /// This makes it possible for the "server" (this process) to send and receive
+  /// [Message]s using the other methods provided by this class.
   ///
   /// [MessagingPipe] will return null if an error has occurred.
   ///
   /// NOTE: Remember to call [clean] after using this [MessagingPipe] to clean up all resources.
   static Future<MessagingPipe?> init(String name, [bool useCustomDirectory = false]) async {
-    name = MessagingAddress(name).getAddress() ?? "";
+    name = MessagingAddress(name).getAddress(true) ?? "";
     if (!Platform.isLinux) {
       throw Exception("Unsupported platform! 'Platform.isLinux' returned false.");
     } else if (_instances.contains(name)) {
@@ -83,8 +93,9 @@ class MessagingPipe {
 
     MessagingPipe thisObj = MessagingPipe._(name);
     InternetAddress address;
-    var runtimeDir = MessagingAddress(Platform.environment['XDG_RUNTIME_DIR']).getAddress();
+    var runtimeDir = MessagingAddress(Platform.environment['XDG_RUNTIME_DIR']).getAddress(true);
 
+    // Set address
     if (useCustomDirectory) {
       address = InternetAddress(name, type: InternetAddressType.unix);
     } else {
@@ -92,6 +103,7 @@ class MessagingPipe {
       address = InternetAddress('$runtimeDir/$name', type: InternetAddressType.unix);
     }
 
+    // Bind server socket
     try {
       thisObj._serverSocket = await ServerSocket.bind(address, 0);
     } catch (e) {
@@ -108,27 +120,31 @@ class MessagingPipe {
     _instances.add(address.address);
 
     // Handle connection of a client that is connected to this instance.
-    thisObj._serverSocket.listen((clientSocket) async {
+    thisObj._serverListenerSubscription = thisObj._serverSocket.listen((clientSocket) async {
       // Client connection is handled here.
       MessagingAddress? clientAddress;
+      StreamSubscription<Uint8List>? clientSubscription;
 
+      // Wait for hello message
       try {
         clientAddress = await thisObj._handleClientHelloMessage(clientSocket);
       } catch (e) {
         clientSocket.close().then((p0) => thisObj._handleClientDisconnection(clientSocket));
-        print('Failed to receive hello message from remote instance (${clientAddress!.getAddress(true) ?? MessagingAddress.invalidPlaceholder}): $e');
+        print('Failed to receive hello message from remote instance (${clientAddress!.getAddress(true) ?? _kInvalidPlaceholder}): $e');
         return;
       }
 
+      // Succesful connection >>
       print('New remote client connected: ${clientAddress.getAddress()}');
       thisObj._clientsConnected[clientSocket] = clientAddress;
 
       // Start listening for messages from the client & invoke the 'receive' event.
-      clientSocket.listen((data) async {
+      clientSubscription = clientSocket.listen((data) async {
         // When the client sends data.
         thisObj._handleClientData(clientSocket, data);
       }, onDone: () async {
         // When the client disconnects.
+        clientSubscription?.cancel();
         thisObj._handleClientDisconnection(clientSocket);
       });
     });
@@ -136,36 +152,62 @@ class MessagingPipe {
     return Future.value(thisObj);
   }
 
-  /// Handle the hello message sent from a client connected to this instance.
-  /// TODO: USE SOMETHING ELSE THAN A WHILE LOOP
+  /// Handle the hello message sent from a client that just connected to this instance.
   Future<MessagingAddress> _handleClientHelloMessage(Socket clientSocket) async {
-    final startTime = DateTime.now();
-    while (!boolVariable) {
-      if (DateTime.now().difference(startTime) >= const Duration(seconds: 5)) {
-        throw TimeoutException("Timeout waiting for bool to become true");
+    final completer = Completer<MessagingAddress>();
+    StreamSubscription<Uint8List> clientListener;
+
+    clientListener = clientSocket.listen(
+      (data) async {
+        var request = String.fromCharCodes(data).trim();
+        var received = Message.fromString(request);
+
+        if (received.name == _SpecialMessages.kMSG_NAME_HelloMsg && received.args.containsKey(_SpecialMessageArgs.kMSG_ARG_MsgAddress)) {
+          var address = MessagingAddress(received.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]);
+          if (address.getAddress() == null) return;
+
+          completer.complete(address);
+        }
+      },
+    );
+
+    Timer? timeoutTimer;
+    timeoutTimer = Timer(Duration(seconds: 5), () {
+      if (!completer.isCompleted) {
+        // Timeout occurred
+        completer.complete(MessagingAddress(null));
       }
-      await Future.delayed(const Duration(milliseconds: 100)); // TODO ?
-    }
-    //return address from hello msg TODO
+      timeoutTimer!.cancel();
+    });
+
+    var finalResult = await completer.future; // Wait for either completion or timeout
+
+    // Make sure to cancel the listener after the future completes
+    clientListener.cancel();
+
+    // Throw exception incase of a timeout
+    if (finalResult.getAddress() == null) throw Exception("Handling hello message timed out!");
+
+    return finalResult;
   }
 
   /// Handle data received from a client connected to this instance.
   void _handleClientData(Socket clientSocket, Uint8List data) async {
     var request = String.fromCharCodes(data).trim();
-    print('Received request from remote instance (${_clientsConnected[clientSocket]!.getAddress(true)}): $request');
+    print('Received request from remote instance (${_clientsConnected[clientSocket]!.getAddress(true) ?? _kUnknownPlaceholder}): $request');
     receiveAll.broadcast(MessageEventArgs(clientSocket, Message.fromString(request)));
   }
 
   /// Handle the disconnection of a client coonected to this instance,
   /// a client needs to connect first to send messages.
   void _handleClientDisconnection(Socket clientSocket) async {
-    print('Client disconnected: ${_clientsConnected[clientSocket]!.getAddress(true)}');
+    print('Client disconnected: ${_clientsConnected[clientSocket]?.getAddress(true) ?? _kUnknownPlaceholder}');
     _clientsConnected.remove(clientSocket);
   }
 
   /// Stops this "server" (this instance) and cleans everything up.
-  /// After this method is called, [Message]s can no longer
-  /// be sent or received from/to this instance.
+  /// After this method is called, [Message]s can no longer be sent or received
+  /// from/to this instance.
   void clean() async {
     receiveAll.unsubscribeAll();
 
@@ -184,13 +226,14 @@ class MessagingPipe {
     // Remove this instance.
     print('Server closed on: ${_serverSocket.address.address}');
     _instances.remove(_name);
+    _serverListenerSubscription.cancel();
     _serverSocket.close();
   }
 
-  /// Sends a [Message] object to a remote instance listening on
-  /// `address`. A message can contain a lot of data, see: [Message].
+  /// Sends a [Message] object to a remote instance listening on `address`.
+  /// A message can contain a lot of data, see: [Message].
   Future<MessageOperationResult> send(String address, Message msg) async {
-    address = MessagingAddress(address).getAddress() ?? "";
+    address = MessagingAddress(address).getAddress(true) ?? "";
     Socket? socket = await _connectTo(address);
 
     if (socket == null) {
@@ -198,7 +241,7 @@ class MessagingPipe {
       return Future.value(MessageOperationResult.error(null));
     }
 
-    msg._fromToAddr = MessagingAddress(address);
+    msg._fromToAddr = MessagingAddress(_serverSocket.address.address);
     socket.write(msg.toString());
     print('Message sent from this instance to [remote instance] (TARGET address!): $address');
     return Future.value(MessageOperationResult.success());
@@ -206,11 +249,10 @@ class MessagingPipe {
 
   /// Connect this instance to a remote instance using an `address`.
   ///
-  /// The returned [Socket] is the socket that this instance
-  /// connected to.
+  /// The returned [Socket] is the socket that this instance connected to.
   /// The connection has failed if the [Socket] is `null`.
   Future<Socket?> _connectTo(String address) async {
-    address = MessagingAddress(address).getAddress() ?? "";
+    address = MessagingAddress(address).getAddress(true) ?? "";
 
     // Check for multiple connections from this instance to the same initial address.
     if (_connectedTo.values.any((s) => s.getAddress() == address)) {
@@ -219,11 +261,21 @@ class MessagingPipe {
       return Future.value(_connectedTo.keys.firstWhere((k) => _connectedTo[k] == _connectedTo.values.firstWhere((s) => s.getAddress() == address)));
     }
 
+    // A function to send a hello message to the remote instance
+    Future<void> sayHello(Socket socket) async {
+      final message = _SpecialMessages.constructHelloMessage(MessagingAddress(_serverSocket.address.address));
+
+      socket.write(message.toString());
+    }
+
     try {
       Socket socket = await Socket.connect(InternetAddress(address, type: InternetAddressType.unix), 0, timeout: Duration(seconds: 5));
       print('This instance connected to [remote instance] (TARGET address!): $address');
       _connectedTo[socket] = MessagingAddress(address);
+
+      await sayHello(socket);
       socket.listen((_) {}, onDone: () async => _disconnectFrom(socket));
+
       return Future.value(socket);
     } catch (error) {
       print('Error occurred while connecting this instance to a remote instance: $error');
@@ -240,9 +292,9 @@ class MessagingPipe {
     socket.close();
   }
 
-  /// An [Event] that can be listened to. Listen for [Message]s
-  /// sent from a remote instance to this instance, a message can
-  /// contain a lot of data, see: [Message].
+  /// An [Event] that can be listened to. Listen for [Message]s sent from a
+  /// remote instance to this instance, a message can contain a lot of data,
+  /// see: [Message].
   /// For the use of the event system, see: [Event].
   final receiveAll = Event<MessageEventArgs>();
 
@@ -256,14 +308,36 @@ class MessagingPipe {
   }
 }
 
+/// A class that contains special messages with special IDs that need to be
+/// sent in order for the messaging system to work.
+class _SpecialMessages {
+  /// The name of a hello message.
+  /// ignore: constant_identifier_names
+  static const kMSG_NAME_HelloMsg = "__HELLO__";
+
+  /// Construct a hello message ([kMSG_NAME_HelloMsg]).
+  /// The `address` is used to send the address with the message.
+  static Message constructHelloMessage(MessagingAddress address) {
+    return Message(kMSG_NAME_HelloMsg, {_SpecialMessageArgs.kMSG_ARG_MsgAddress: address.getAddress() ?? ""});
+  }
+}
+
+/// A class that contains special arguments (key-value pairs) to be sent
+/// within messages
+class _SpecialMessageArgs {
+  /// The ARGUMENT (key) name of an address in a message.
+  /// The value of this address should contain the address the message came from.
+  // ignore: constant_identifier_names
+  static const kMSG_ARG_MsgAddress = "__MSGDAT_ADDRESS__";
+}
+
 /// A message that can be first sent, then received somewhere else.
-/// See [MessagingPipe.send] and [MessagingPipe.receive] for
-/// using the messaging system to send/receive messages between
-/// separate processes.
+/// See [MessagingPipe.send] and [MessagingPipe.receive] for using the
+/// messaging system to send/receive messages between separate processes.
 class Message {
   /// The name/ID of the message to be sent, should not contain spaces.
-  /// This name should also be unique, to be sure, numbers can be used
-  /// as a prefix/suffix if needed.
+  /// This name should also be unique, to be sure, numbers can be used as a
+  /// prefix/suffix if needed.
   String name;
 
   /// The address this message was sent from, or will be sent to.
@@ -288,8 +362,8 @@ class Message {
     }
 
     // Special keyvalue pair: address
-    if (MessagingAddress(result.args["__MSGDAT_ADDRESS__"]).getAddress() != null) {
-      result._fromToAddr = MessagingAddress(result.args["__MSGDAT_ADDRESS__"]);
+    if (MessagingAddress(result.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]).getAddress() != null) {
+      result._fromToAddr = MessagingAddress(result.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]);
     }
 
     result.name = validateName(result.name, false);
@@ -303,7 +377,7 @@ class Message {
 
     // Special keyvalue pair: address
     if (_fromToAddr.getAddress() != null) {
-      args["__MSGDAT_ADDRESS__"] = _fromToAddr.getAddress()!;
+      args[_SpecialMessageArgs.kMSG_ARG_MsgAddress] = _fromToAddr.getAddress()!;
     }
 
     args.forEach((key, value) {
@@ -353,20 +427,16 @@ class Message {
     return retStr;
   }
 
-  /// Contruct a [Message] object containing a required name,
-  /// the name should not have any blank spaces. `args` can
-  /// be empty, not null.
+  /// Contruct a [Message] object containing a required name, the name should
+  /// not have any blank spaces. `args` can be empty, not null.
   Message(this.name, this.args);
 }
 
-/// The address that gets sent within a [Message]. The address is the path
-/// to the source Unix Domain Socket file.
+/// The address that gets sent within a [Message]. The address is the path to
+/// the source Unix Domain Socket file.
 class MessagingAddress implements Comparable<String> {
   /// Error message to throw when trying to invoke `toString()`.
-  static const String errMsg = "Invoking 'toString()' on an instance of MessageAddress is not supported! Use 'getAddress()' instead.";
-
-  /// A placeholder for an invalid address.
-  static const String invalidPlaceholder = "<invalid>";
+  static const String _kErrMsg = "Invoking 'toString()' on an instance of MessageAddress is not supported! Use 'getAddress()' instead.";
 
   /// The address of this object. Cannot be modified externally after this
   /// object has been instantiated. The address should be the path to the
@@ -377,14 +447,14 @@ class MessagingAddress implements Comparable<String> {
   ///
   /// RULE: Note! Always only compare with a [String] that has invoked the
   /// `toMessageAddressString()` mathod from the [_MessageAddressExt] extension.
-  /// 
+  ///
   /// If `useInvalidAddressStringPlaceholder` is true, this method will never
   /// return null, instead, it will return "<invalid>". If this function returns
   /// "<invalid>", it is always an invalid address (in that case).
   String? getAddress([bool useInvalidAddressStringPlaceholder = false]) {
-    if (_address == null || _address == "" || _address == invalidPlaceholder) {
+    if (_address == null || _address == "" || _address == _kInvalidPlaceholder) {
       if (useInvalidAddressStringPlaceholder) {
-        return invalidPlaceholder;
+        return _kInvalidPlaceholder;
       } else {
         return null;
       }
@@ -400,32 +470,14 @@ class MessagingAddress implements Comparable<String> {
     return getAddress()!.compareTo(MessagingAddress(other).getAddress() ?? "");
   }
 
-  @Deprecated(errMsg)
+  @Deprecated(_kErrMsg)
   @override
-  String toString() => throw Exception(errMsg);
+  String toString() => throw Exception(_kErrMsg);
 
   /// Instantiate a messaging address object with a path to a Unix Domain
   /// Socket file.
   const MessagingAddress(this._address);
 }
-
-/// Extensions to easily convert a [String] to a [MessagingAddress], or a
-/// validated version of an address string. Use for comparing two addresses
-/// as [String]s.
-//extension _MessageAddressExt on String {
-//  /// Converts this [String] object to a [MessagingAddress] object.
-//  MessagingAddress toMessageAddress() {
-//    return MessagingAddress(this);
-//  }
-//
-//  /// Converts this [String] object to a [MessagingAddress] object invoking the
-//  /// `getAddress()` method to return a validated address string.
-//  ///
-//  /// Returns null if the address is invalid.
-//  String? toMessageAddressString() {
-//    return MessagingAddress(this).getAddress();
-//  }
-//}
 
 /// [EventArgs] for receiving messages from a remote instance. Contains all
 /// needed data.
