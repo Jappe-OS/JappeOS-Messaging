@@ -20,6 +20,10 @@ import 'dart:typed_data';
 import 'package:event/event.dart';
 import 'package:uuid/uuid.dart';
 
+//
+// TODO: make callback system and test the whole messaging system and all of its features!!!
+//
+
 /// Use to represent **unknown** values in [String] objects that are either logged
 /// to the console, or used in an exception.
 const _kUnknownPlaceholder = "<unknown>";
@@ -163,7 +167,7 @@ class MessagingPipe {
         var request = String.fromCharCodes(data).trim();
         var received = Message.fromString(request);
 
-        if (received.name == _SpecialMessages.kMSG_NAME_HelloMsg && received.args.containsKey(_SpecialMessageArgs.kMSG_ARG_MsgAddress)) {
+        if (received._name == _SpecialMessages.kMSG_NAME_HelloMsg && received.args.containsKey(_SpecialMessageArgs.kMSG_ARG_MsgAddress)) {
           var address = MessagingAddress(received.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]);
           if (address.getAddress() == null) return;
 
@@ -233,26 +237,29 @@ class MessagingPipe {
 
   /// Sends a [Message] object to a remote instance listening on `address`.
   /// A message can contain a lot of data, see: [Message].
-  /// 
+  ///
   /// Keeping `callback` as null will make this message not receive a callback.
-  /// 
+  ///
   /// Setting `answerToUUID` will declare this message as a callback/answer to
   /// another message.
-  Future<MessageOperationResult> send(String address, Message msg, {Message Function()? callback, List<int>? answerToUUID}) async {
-    assert(callback == null || answerToUUID == null); // <-- TODO needed?  Other things have to be modified to disallow having a send-to and a answer UUID
+  Future<MessageSendOperationResult> send(String address, Message msg,
+      {bool needsCallback = false, Message Function()? callback, List<int>? answerToUUID}) async {
+    assert(callback == null ||
+        answerToUUID == null); // <-- TODO needed?  Other things have to be modified to disallow having a send-to and a answer UUID
 
     address = MessagingAddress(address).getAddress(true) ?? "";
     Socket? socket = await _connectTo(address);
 
     if (socket == null) {
-      print('Failed to send message to remote instance due to connection error! Target address: $address');
-      return Future.value(MessageOperationResult.error(null));
+      var errMsg = "Failed to send message to remote instance due to connection error! Target address: $address";
+      print(errMsg);
+      throw Exception(errMsg);
     }
 
     msg._fromToAddr = MessagingAddress(_serverSocket.address.address);
     socket.write(msg.toString());
     print('Message sent from this instance to [remote instance] (TARGET address!): $address');
-    return Future.value(MessageOperationResult.success());
+    return Future.value(MessageSendOperationResult.success());
   }
 
   /// Connect this instance to a remote instance using an `address`.
@@ -328,6 +335,10 @@ class _SpecialMessages {
   static Message constructHelloMessage(MessagingAddress address) {
     return Message(kMSG_NAME_HelloMsg, {_SpecialMessageArgs.kMSG_ARG_MsgAddress: address.getAddress() ?? ""});
   }
+
+  /// The name of a callback (answer) message.
+  /// ignore: constant_identifier_names
+  static const kMSG_NAME_CallbackMsg = "__CALLBACK__";
 }
 
 /// A class that contains special arguments (key-value pairs) to be sent
@@ -338,44 +349,88 @@ class _SpecialMessageArgs {
   // ignore: constant_identifier_names
   static const kMSG_ARG_MsgAddress = "__MSGDAT_ADDRESS__";
 
-  /// The ARGUMENT (key) name of a unique callback ID in a message.
-  /// These can be used to identify messages from each other. Mainly used for
-  /// messages that need an answer back from the remote instance.
-  ///
-  /// This is the send-to variant of the callback ID. This will be sent to a
-  /// remote instance, afterwhich, we will wait for an answer with a matching
-  /// '__MSGDAT_CBUUID_ANSWER__' ID.
   // ignore: constant_identifier_names
-  static const kMSG_ARG_MsgCallbackUUIDsendto = "__MSGDAT_CBUUID_SENDTO__";
+  static const kMSG_ARG_MsgCallbackUUID = "__MSGDAT_CALLBACK_UUID__";
 
-  /// The ARGUMENT (key) name of a unique callback ID in a message.
-  /// These can be used to identify messages from each other. Mainly used for
-  /// messages that need an answer back from the remote instance.
-  ///
-  /// This is the answer variant of the callback ID. This will be the same as a
-  /// '__MSGDAT_CBUUID_SENDTO__' arg of a specific message.
   // ignore: constant_identifier_names
-  static const kMSG_ARG_MsgCallbackUUIDanswer = "__MSGDAT_CBUUID_ANSWER__";
+  static const kMSG_ARG_MsgCallbackType = "__MSGDAT_CALLBACK_TYPE__";
+}
+
+enum MessageType { normal, callbackReply }
+
+class MessageCallbackReplyType {
+  static const _unspecified = "unspecified", _success = "success", _error = "error";
+
+  final String _val;
+  String get value => _val;
+
+  MessageCallbackReplyType._(this._val);
+
+  factory MessageCallbackReplyType.unspecified() {
+    return MessageCallbackReplyType._(_unspecified);
+  }
+
+  factory MessageCallbackReplyType.success() {
+    return MessageCallbackReplyType._(_success);
+  }
+
+  factory MessageCallbackReplyType.error() {
+    return MessageCallbackReplyType._(_error);
+  }
+
+  @override
+  String toString() => value;
+
+  static MessageCallbackReplyType fromString(String? str) {
+    switch (str) {
+      case _unspecified:
+        return MessageCallbackReplyType.unspecified();
+      case _success:
+        return MessageCallbackReplyType.success();
+      case _error:
+        return MessageCallbackReplyType.error();
+      default:
+        return MessageCallbackReplyType.unspecified();
+    }
+  }
 }
 
 /// A message that can be first sent, then received somewhere else.
 /// See [MessagingPipe.send] and [MessagingPipe.receive] for using the
 /// messaging system to send/receive messages between separate processes.
 class Message {
+  /// If the type of the sent message is `normal`, the message is a normal
+  /// message that can (but does not have to) require a (callback) reply.
+  ///
+  /// If the type of the sent message is `callbackReply`, the message is a
+  /// reply to another message.
+  MessageType get type => _callbackIsReply ? MessageType.callbackReply : MessageType.normal;
+
   /// The name/ID of the message to be sent, should not contain spaces.
   /// This name should also be unique, to be sure, numbers can be used as a
   /// prefix/suffix if needed.
-  String name;
+  String get name => _name;
+  String _name;
 
   /// The address this message was sent from, or will be sent to.
   MessagingAddress _fromToAddr = MessagingAddress(null);
 
   /// Callback ID to send and wait for an answer [Message] that has this ID as
   /// its 'answerCallbackUUID'.
-  List<int>? _sendToCallbackUUID;
+  //List<int>? _sendToCallbackUUID;
+  //List<int>? get sendToCallbackUUID => _sendToCallbackUUID;
+  //
+  ///// Answer ID to a [Message] with this 'sendToCallbackUUID'.
+  //List<int>? _answerCallbackUUID;
+  //List<int>? get answerCallbackUUID => _answerCallbackUUID;
 
-  /// Answer ID to a [Message] with this 'sendToCallbackUUID'.
-  List<int>? _answerCallbackUUID;
+  List<int>? get callbackUUID => _callbackUUID;
+  List<int>? _callbackUUID;
+
+  MessageCallbackReplyType? _callbackReplyType;
+
+  /// Wether the callback is a reply or not.
+  bool _callbackIsReply = false;
 
   /// The arguments of the message, can be left empty. Key & Value.
   /// These args are used to transport data alongside the message.
@@ -383,9 +438,9 @@ class Message {
 
   /// Converts any [String] to a new [Message] object.
   static Message fromString(String str) {
-    Message result = Message(_getSubstringBeforeFirstSpace(str), {});
+    Message result = Message._(_getSubstringBeforeFirstSpace(str), {});
 
-    var pairs = str.replaceFirst(result.name, "").trim().split(RegExp(r'(?<!\\);'));
+    var pairs = str.replaceFirst(result._name, "").trim().split(RegExp(r'(?<!\\);'));
     for (var pair in pairs) {
       var keyValue = pair.split(RegExp(r'(?<!\\):'));
       if (keyValue.length == 2) {
@@ -395,43 +450,50 @@ class Message {
       }
     }
 
-    // Special keyvalue pair: address
-    if (MessagingAddress(result.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]).getAddress() != null) {
-      result._fromToAddr = MessagingAddress(result.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]);
+    {
+      // Special keyvalue pair: address
+      if (MessagingAddress(result.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]).getAddress() != null) {
+        result._fromToAddr = MessagingAddress(result.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]);
+      }
+
+      // Special keyvalue pair: callback ID TODO
+      if (result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUID] != null) {
+        result._callbackUUID = Uuid.parse(result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUID]!);
+
+        // If this message is a reply to an other message
+        if (result._name == _SpecialMessages.kMSG_NAME_CallbackMsg) {
+          result._callbackIsReply = true;
+
+          result._callbackReplyType = MessageCallbackReplyType.fromString(result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackType]);
+        }
+      }
     }
 
-    // Special keyvalue pair: send-to callback ID TODO
-    if (result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDsendto] != null) {
-      result._sendToCallbackUUID = Uuid.parse(result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDsendto]!);
-    }
-
-    // Special keyvalue pair: answer callback ID TODO
-    if (result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDanswer] != null) {
-      result._answerCallbackUUID = Uuid.parse(result.args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDanswer]!);
-    }
-
-    result.name = validateName(result.name, false);
+    result._name = validateName(result._name, false);
     return result;
   }
 
   /// Converts this [Message] object to a [String] type.
   @override
   String toString() {
-    String result = "${validateName(name, true)} ";
+    String result = "${validateName(_name, true)} ";
 
-    // Special keyvalue pair: address
-    if (_fromToAddr.getAddress() != null) {
-      args[_SpecialMessageArgs.kMSG_ARG_MsgAddress] = _fromToAddr.getAddress()!;
-    }
+    {
+      // Special keyvalue pair: address
+      if (_fromToAddr.getAddress() != null) {
+        args[_SpecialMessageArgs.kMSG_ARG_MsgAddress] = _fromToAddr.getAddress()!;
+      }
 
-    // Special keyvalue pair: send-to callback ID TODO
-    if (_sendToCallbackUUID != null) {
-      args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDsendto] = Uuid.unparse(_sendToCallbackUUID!);
-    }
+      // Special keyvalue pair: callback ID TODO
+      if (_callbackUUID != null) {
+        _name = _SpecialMessages.kMSG_NAME_CallbackMsg;
+        args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUID] = Uuid.unparse(_callbackUUID!);
 
-    // Special keyvalue pair: answer callback ID TODO
-    if (_answerCallbackUUID != null) {
-      args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackUUIDanswer] = Uuid.unparse(_answerCallbackUUID!);
+        // If this message is a reply to an other message
+        if (_callbackIsReply) {
+          args[_SpecialMessageArgs.kMSG_ARG_MsgCallbackType] = _callbackReplyType.toString();
+        }
+      }
     }
 
     args.forEach((key, value) {
@@ -481,11 +543,24 @@ class Message {
     return retStr;
   }
 
-  /// Contruct a [Message] object containing a required name, the name should
-  /// not have any blank spaces. `args` can be empty, not null.
-  Message(this.name, this.args, {List<int>? sendToCallbackUUID, List<int>? answerCallbackUUID})
-      : _sendToCallbackUUID = sendToCallbackUUID,
-        _answerCallbackUUID = answerCallbackUUID;
+  /// Construct a [Message] object privately with all possible settings.
+  Message._(String? name, this.args, {List<int>? callbackUUID, bool isReply = false})
+      : assert(!isReply && name == null, "Message names can only be null when it is a (callback) reply to an other message."),
+        _name = isReply ? _SpecialMessages.kMSG_NAME_CallbackMsg : name ?? "",
+        _callbackUUID = callbackUUID,
+        _callbackIsReply = isReply;
+
+  /// Constructs a normal message that can require a callback back from the
+  /// address it was first sent to.
+  factory Message.normal(String name, Map<String, String> args, {List<int>? callbackUUID}) {
+    return Message._(name, args, callbackUUID: callbackUUID);
+  }
+
+  /// Constructs a callback reply message that can reply to a normal message
+  /// sent from another address. See: [Message.normal], and [MessagingPipe.send].
+  factory Message.callbackReply(List<int>? callbackUUID, Map<String, String> args) {
+    return Message._(null, args, callbackUUID: callbackUUID, isReply: true);
+  }
 }
 
 /// The address that gets sent within a [Message]. The address is the path to
@@ -547,27 +622,42 @@ class MessageEventArgs extends EventArgs {
   MessageEventArgs(this.from, this.data);
 }
 
-/// The result of a messaging operation like send().
-class MessageOperationResult {
-  /// Whether the operation was successful or not. Cannot be null.
-  final bool success;
+/// The result of a send() messaging operation.
+class MessageSendOperationResult {
+  final MessagingPipe pipeRef;
+  final List<int>? sendToUUID;
+  bool get requiresCallback => sendToUUID != null;
 
-  /// Other info. Can be displayed as a message to a user to give more
-  /// information about the error. A successful operation does not need this.
-  /// Can be null if no info was provided.
-  final String? info;
+  Future<Message> waitForCallback(MessagingAddress address) async {
+    assert(!requiresCallback, "Function 'waitForCallback()' was invoked but 'requiresCallback' returned false!");
 
-  /// Construct a successful operation, no additional info can be added.
-  factory MessageOperationResult.success() {
-    return MessageOperationResult._(true, null);
+    Message receivedCallback = await _doWaitForCallback(address, Duration(seconds: 2));
+
+    return receivedCallback;
   }
 
-  /// Contruct a operation result that resulted in an error. Additional info
-  /// can be provided, if any.
-  factory MessageOperationResult.error(String? info) {
-    return MessageOperationResult._(false, null);
+  Future<Message> _doWaitForCallback(MessagingAddress address, Duration timeout) async {
+    final completer = Completer<Message?>();
+
+    pipeRef.receive(address.getAddress() ?? "", (p0) async {
+      if (p0!.data.type != MessageType.callbackReply && p0.data.callbackUUID != sendToUUID) return;
+
+      completer.complete(p0.data);
+    });
+
+    Timer? timeoutTimer;
+    timeoutTimer = Timer(timeout, () {
+      if (!completer.isCompleted) {
+        // Timeout occurred
+        completer.complete(null);
+      }
+      timeoutTimer!.cancel();
+    });
+
+    var finalResult = await completer.future;
+
+    // TODO
   }
 
-  /// Private contructor to construct a [MessageOperationResult].
-  MessageOperationResult._(this.success, this.info);
+  MessageSendOperationResult({required this.pipeRef, this.sendToUUID});
 }
