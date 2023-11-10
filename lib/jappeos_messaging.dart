@@ -286,9 +286,17 @@ class MessagingPipe {
 
     // A function to send a hello message to the remote instance
     Future<void> sayHello(Socket socket) async {
+      Completer<void> completer = Completer<void>();
       final message = _SpecialMessages.constructHelloMessage(MessagingAddress(_serverSocket.address.address));
 
       socket.write(message.toString());
+
+      socket.done.then((_) {
+        print('Data sent successfully'); // TODO: rem
+        completer.complete();
+      });
+
+      await completer.future;
     }
 
     try {
