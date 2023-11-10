@@ -130,10 +130,15 @@ class MessagingPipe {
       // Client connection is handled here.
       MessagingAddress? clientAddress;
       StreamSubscription<Uint8List>? clientSubscription;
+      clientSubscription = clientSocket.listen(null, onDone: () async {
+        // When the client disconnects.
+        clientSubscription?.cancel();
+        thisObj._handleClientDisconnection(clientSocket);
+      });
 
       // Wait for hello message
       try {
-        clientAddress = await thisObj._handleClientHelloMessage(clientSocket);
+        clientAddress = await thisObj._handleClientHelloMessage(clientSocket, clientSubscription);
       } catch (e) {
         clientSocket.close().then((p0) => thisObj._handleClientDisconnection(clientSocket));
         print('Failed to receive hello message from remote instance (${clientAddress?.getAddress(true) ?? _kInvalidPlaceholder}): $e');
@@ -145,25 +150,18 @@ class MessagingPipe {
       thisObj._clientsConnected[clientSocket] = clientAddress;
 
       // Start listening for messages from the client & invoke the 'receive' event.
-      clientSubscription = clientSocket.listen((data) async { // TODO: Only listen to socket once (still happening??)
-        // When the client sends data.
-        thisObj._handleClientData(clientSocket, data);
-      }, onDone: () async {
-        // When the client disconnects.
-        clientSubscription?.cancel();
-        thisObj._handleClientDisconnection(clientSocket);
-      });
+      // When the client sends data:
+      clientSubscription.onData((data) async => thisObj._handleClientData(clientSocket, data));
     });
 
     return Future.value(thisObj);
   }
 
   /// Handle the hello message sent from a client that just connected to this instance.
-  Future<MessagingAddress> _handleClientHelloMessage(Socket clientSocket) async {
+  Future<MessagingAddress> _handleClientHelloMessage(Socket clientSocket, StreamSubscription<Uint8List> listener) async {
     final completer = Completer<MessagingAddress>();
-    StreamSubscription<Uint8List> clientListener;
 
-    clientListener = clientSocket.listen(
+    listener.onData(
       (data) async {
         var request = String.fromCharCodes(data).trim();
         var received = Message.fromString(request);
@@ -189,7 +187,7 @@ class MessagingPipe {
     var finalResult = await completer.future; // Wait for either completion or timeout
 
     // Make sure to cancel the listener after the future completes
-    await clientListener.cancel();
+    //await clientListener.cancel();
 
     // Throw exception incase of a timeout
     if (finalResult.getAddress() == null) throw Exception("Handling hello message timed out!");
