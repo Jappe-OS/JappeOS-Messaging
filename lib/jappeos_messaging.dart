@@ -130,15 +130,20 @@ class MessagingPipe {
       // Client connection is handled here.
       MessagingAddress? clientAddress;
       StreamSubscription<Uint8List>? clientSubscription;
-      clientSubscription = clientSocket.listen(null, onDone: () async {
-        // When the client disconnects.
-        clientSubscription?.cancel();
-        thisObj._handleClientDisconnection(clientSocket);
-      });
+      final onClientData = Event<Value<Uint8List>>();
+      clientSubscription = clientSocket.listen(
+        (p0) async => onClientData.broadcast(Value(p0)),
+        onDone: () async {
+          // When the client disconnects.
+          clientSubscription?.cancel();
+          onClientData.unsubscribeAll();
+          thisObj._handleClientDisconnection(clientSocket);
+        },
+      );
 
       // Wait for hello message
       try {
-        clientAddress = await thisObj._handleClientHelloMessage(clientSocket, clientSubscription);
+        clientAddress = await thisObj._handleClientHelloMessage(clientSocket, onClientData);
       } catch (e) {
         clientSocket.close().then((p0) => thisObj._handleClientDisconnection(clientSocket));
         print('Failed to receive hello message from remote instance (${clientAddress?.getAddress(true) ?? _kInvalidPlaceholder}): $e');
@@ -150,31 +155,35 @@ class MessagingPipe {
       thisObj._clientsConnected[clientSocket] = clientAddress;
 
       // Start listening for messages from the client & invoke the 'receive' event.
+      // This subscription does not need to be unsubscribed from manually, since
+      // all subscriptions will be unsubscribed from when the client disconnects.
       // When the client sends data:
-      clientSubscription.onData((data) async => thisObj._handleClientData(clientSocket, data));
+      onClientData.subscribe((args) async => thisObj._handleClientData(clientSocket, args!.value));
     });
 
     return Future.value(thisObj);
   }
 
   /// Handle the hello message sent from a client that just connected to this instance.
-  Future<MessagingAddress> _handleClientHelloMessage(Socket clientSocket, StreamSubscription<Uint8List> listener) async {
+  Future<MessagingAddress> _handleClientHelloMessage(Socket clientSocket, Event<Value<Uint8List>> onDataEventRef) async {
     final completer = Completer<MessagingAddress>();
 
-    listener.onData(
-      (data) async {
-        var request = String.fromCharCodes(data).trim();
-        var received = Message.fromString(request);
+    void onDataReceived(Value<Uint8List>? args) async {
+      var request = String.fromCharCodes(args!.value).trim();
+      var received = Message.fromString(request);
 
-        if (received._name == _SpecialMessages.kMSG_NAME_HelloMsg && received.args.containsKey(_SpecialMessageArgs.kMSG_ARG_MsgAddress)) {
-          var address = MessagingAddress(received.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]);
-          if (address.getAddress() == null) return;
+      if (received._name == _SpecialMessages.kMSG_NAME_HelloMsg && received.args.containsKey(_SpecialMessageArgs.kMSG_ARG_MsgAddress)) {
+        var address = MessagingAddress(received.args[_SpecialMessageArgs.kMSG_ARG_MsgAddress]);
+        if (address.getAddress() == null) return;
 
-          completer.complete(address);
-        }
-      },
-    );
+        completer.complete(address);
+      }
+    }
 
+    // Subscribe to event and listen for a hello message
+    onDataEventRef + onDataReceived;
+
+    // Timer for the timeout
     Timer? timeoutTimer;
     timeoutTimer = Timer(Duration(seconds: 5), () {
       if (!completer.isCompleted) {
@@ -184,10 +193,11 @@ class MessagingPipe {
       timeoutTimer!.cancel();
     });
 
-    var finalResult = await completer.future; // Wait for either completion or timeout
+    // Wait for either completion or timeout
+    var finalResult = await completer.future;
 
-    // Make sure to cancel the listener after the future completes
-    //await clientListener.cancel();
+    // Make sure to unsubscribe from the event after the future completes
+    onDataEventRef - onDataReceived;
 
     // Throw exception incase of a timeout
     if (finalResult.getAddress() == null) throw Exception("Handling hello message timed out!");
