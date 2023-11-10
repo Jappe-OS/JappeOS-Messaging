@@ -240,7 +240,7 @@ class MessagingPipe {
   /// A message can contain a lot of data, see: [Message].
   ///
   /// Keeping `onCallback` as null will make this message not receive a callback.
-  void send(String address, Message msg, {void Function(Message)? onCallback}) async {
+  void send(String address, Message msg, {void Function(Future<Message>)? onCallback}) async {
     address = MessagingAddress(address).getAddress(true) ?? "";
     Socket? socket = await _connectTo(address);
 
@@ -257,14 +257,9 @@ class MessagingPipe {
       sendToUUID: onCallback != null ? Uuid.parse(Uuid().v4()) : null,
     );
 
-    Future<Message>? callbackResultFuture = onCallback != null ? operationResult.waitForCallback() : null;
+    if (onCallback != null) onCallback(operationResult.waitForCallback());
     socket.write(msg.toString());
     print('Message sent from this instance to [remote instance] (TARGET address!): $address${onCallback != null ? ". Expecting callback." : ""}');
-
-    if (onCallback != null && callbackResultFuture != null) {
-      Message callbackMessage = await callbackResultFuture;
-      onCallback(callbackMessage);
-    }
   }
 
   /// Connect this instance to a remote instance using an `address`.
@@ -366,7 +361,7 @@ class _SpecialMessageArgs {
 }
 
 /// `normal`: A normal message that can receive a callback.
-/// 
+///
 /// `callbackReply`: A (callback) "reply" to a normal message
 enum MessageType { normal, callbackReply }
 
@@ -570,15 +565,12 @@ class Message {
 
   /// Constructs a normal message that can require a callback back from the
   /// address it was first sent to.
-  factory Message.normal(String name, Map<String, String> args, {List<int>? callbackUUID}) {
-    return Message._(name, args, callbackUUID: callbackUUID);
-  }
+  Message.normal(String name, Map<String, String> args, {List<int>? callbackUUID}) : this._(name, args, callbackUUID: callbackUUID);
 
   /// Constructs a callback reply message that can reply to a normal message
   /// sent from another address. See: [Message.normal], and [MessagingPipe.send].
-  factory Message.callbackReply(List<int>? callbackUUID, Map<String, String> args, {MessageCallbackReplyType? callbackReplyType}) {
-    return Message._(null, args, callbackUUID: callbackUUID, isReply: true, callbackReplyType: callbackReplyType);
-  }
+  Message.callbackReply(List<int>? callbackUUID, Map<String, String> args, {MessageCallbackReplyType? callbackReplyType})
+      : this._(null, args, callbackUUID: callbackUUID, isReply: true, callbackReplyType: callbackReplyType);
 }
 
 /// The address that gets sent within a [Message]. The address is the path to
