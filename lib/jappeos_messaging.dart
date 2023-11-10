@@ -136,7 +136,7 @@ class MessagingPipe {
         clientAddress = await thisObj._handleClientHelloMessage(clientSocket);
       } catch (e) {
         clientSocket.close().then((p0) => thisObj._handleClientDisconnection(clientSocket));
-        print('Failed to receive hello message from remote instance (${clientAddress!.getAddress(true) ?? _kInvalidPlaceholder}): $e');
+        print('Failed to receive hello message from remote instance (${clientAddress?.getAddress(true) ?? _kInvalidPlaceholder}): $e');
         return;
       }
 
@@ -145,7 +145,7 @@ class MessagingPipe {
       thisObj._clientsConnected[clientSocket] = clientAddress;
 
       // Start listening for messages from the client & invoke the 'receive' event.
-      clientSubscription = clientSocket.listen((data) async {
+      clientSubscription = clientSocket.listen((data) async { // TODO: Only listen to socket once (still happening??)
         // When the client sends data.
         thisObj._handleClientData(clientSocket, data);
       }, onDone: () async {
@@ -189,7 +189,7 @@ class MessagingPipe {
     var finalResult = await completer.future; // Wait for either completion or timeout
 
     // Make sure to cancel the listener after the future completes
-    clientListener.cancel();
+    await clientListener.cancel();
 
     // Throw exception incase of a timeout
     if (finalResult.getAddress() == null) throw Exception("Handling hello message timed out!");
