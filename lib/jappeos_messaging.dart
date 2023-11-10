@@ -248,7 +248,7 @@ class MessagingPipe {
   /// A message can contain a lot of data, see: [Message].
   ///
   /// Keeping `onCallback` as null will make this message not receive a callback.
-  void send(String address, Message msg, {void Function(Future<Message>)? onCallback}) async {
+  void send(String address, Message msg, {void Function(Future<Message>)? onCallback}) async {// TODO: Fix message not sending when connecting first. If we are already connected to the target and send a message, it'll work just fine.
     address = MessagingAddress(address).getAddress(true) ?? "";
     Socket? socket = await _connectTo(address);
 
