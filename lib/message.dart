@@ -14,50 +14,44 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import 'dart:convert';
 import 'dart:typed_data';
+import 'package:msgpack_dart/msgpack_dart.dart' as msgpack;
 
 class Message {
-  /// Serializes a [Message] into a `Uint8List` (JSON encoded).
+  /// Serializes a [Message] into a `Uint8List` using MessagePack.
   ///
-  /// Converts the [Message] object into a JSON string, then encodes that string
-  /// into a list of bytes using UTF-8 encoding.
+  /// Converts the [Message] object into a `Map`, then encodes that map
+  /// into binary data using MessagePack.
   static Uint8List serialize(Message msg) {
     // Convert Message object to a Map.
-    final Map<String, dynamic> jsonMap = {
+    final Map<String, dynamic> messageMap = {
       'id': msg.id,
-      'data': msg.data, // Allow more complex data structures
+      'data': msg.data, // Preserve the complex structure of 'data'
     };
-    
-    // Convert the Map to a JSON string.
-    final jsonString = jsonEncode(jsonMap);
-    
-    // Convert JSON string to a list of bytes (UTF-8 encoding).
-    return Uint8List.fromList(utf8.encode(jsonString));
+
+    // Serialize the Map into binary data using MessagePack.
+    return Uint8List.fromList(msgpack.serialize(messageMap));
   }
 
-  /// Deserializes a `Uint8List` back into a [Message] object.
+  /// Deserializes a `Uint8List` back into a [Message] object using MessagePack.
   ///
-  /// Takes the byte data, decodes it into a JSON string, and then parses that string
-  /// into a [Map] which is used to construct a [Message] object.
+  /// Takes the binary data, decodes it into a `Map` using MessagePack, and
+  /// constructs a [Message] object from that map.
   static Message deserialize(Uint8List data) {
-    // Convert Uint8List to a UTF-8 string.
-    final jsonString = utf8.decode(data);
-    
-    // Parse the JSON string into a Map.
-    final Map<String, dynamic> jsonMap = jsonDecode(jsonString);
+    // Decode binary data into a Map using MessagePack.
+    final Map<String, dynamic> messageMap = msgpack.deserialize(data);
 
     // Extract 'id' and 'data' from the Map and create a Message object.
     return Message(
-      jsonMap['id'],
-      data: Map<String, dynamic>.from(jsonMap['data']), // Allow complex objects
+      messageMap['id'],
+      data: Map<String, dynamic>.from(messageMap['data']), // Ensure correct type
     );
   }
 
   const Message(this.id, {this.data = const {}});
 
   final int id;
-  final Map<String, dynamic> data; // Allow dynamic data types
+  final Map<String, dynamic> data; // Allow complex nested data structures
 
   @override
   String toString() {

@@ -117,8 +117,8 @@ class MessagingPipe {
     await pipe._dispose();
   }
 
-  /// A private constructor that calls the private [_initialize] function.
-  MessagingPipe._(this.type, this.name, this.address, this.port) { _initialize(); }
+  /// A private constructor to construct a MessagingPipe.
+  MessagingPipe._(this.type, this.name, this.address, this.port);
 
   /// The [InternetAddressType] to use for communication.
   final InternetAddressType type;
