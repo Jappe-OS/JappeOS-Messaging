@@ -14,8 +14,23 @@
 //  You should have received a copy of the GNU Affero General Public License
 //  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-library jappeos_messaging;
+import 'dart:io';
 
-export 'messaging_pipe.dart';
-export 'message.dart';
-export 'events.dart';
+import 'package:event/event.dart';
+import 'package:jappeos_messaging/message.dart';
+
+class MessageSentEventArgs extends EventArgs {
+  MessageSentEventArgs(this.address, this.port, this.sentMessage);
+
+  final InternetAddress address;
+  final int port;
+  final Message sentMessage;
+}
+
+class MessageReceivedEventArgs extends EventArgs {
+  MessageReceivedEventArgs(this.address, this.port, this.sentMessage);
+
+  final InternetAddress address;
+  final int port;
+  final Message sentMessage;
+}
