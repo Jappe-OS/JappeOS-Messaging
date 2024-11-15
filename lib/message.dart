@@ -26,7 +26,7 @@ class Message {
     // Convert Message object to a Map.
     final Map<String, dynamic> jsonMap = {
       'id': msg.id,
-      'data': msg.data,
+      'data': msg.data, // Allow more complex data structures
     };
     
     // Convert the Map to a JSON string.
@@ -50,14 +50,14 @@ class Message {
     // Extract 'id' and 'data' from the Map and create a Message object.
     return Message(
       jsonMap['id'],
-      data: Map<String, String>.from(jsonMap['data']),
+      data: Map<String, dynamic>.from(jsonMap['data']), // Allow complex objects
     );
   }
 
   const Message(this.id, {this.data = const {}});
 
   final int id;
-  final Map<String, String> data;
+  final Map<String, dynamic> data; // Allow dynamic data types
 
   @override
   String toString() {
