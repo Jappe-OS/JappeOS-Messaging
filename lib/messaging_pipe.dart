@@ -133,10 +133,10 @@ class MessagingPipe {
   final int port;
 
   /// An [Event] called when a client sends a [Message] to this messaging pipe.
-  final Event onDataReceive = Event<MessageReceivedEventArgs>();
+  final Event<MessageReceivedEventArgs> onDataReceive = Event<MessageReceivedEventArgs>();
 
   /// An [Event] called when this pipe sends a [Message] to a client.
-  final Event onDataSend = Event<MessageSentEventArgs>();
+  final Event<MessageSentEventArgs> onDataSend = Event<MessageSentEventArgs>();
 
   /// The socket of this messaging pipe.
   late RawDatagramSocket _socket;
